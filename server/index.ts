@@ -98,6 +98,7 @@ app.use((err: any, req: any, res: any, next: any) => {
 });
 
 const PORT = process.env.PORT || 5000;
+const HOST = process.env.HOST || '0.0.0.0';
 
 async function startServer() {
   if (process.env.NODE_ENV === 'development') {
@@ -108,8 +109,8 @@ async function startServer() {
     logger.info(">>> [Server] Static file serving configured.");
   }
 
-  server.listen(PORT, () => {
-    logger.info(`Server running on port ${PORT}`);
+  server.listen(Number(PORT), HOST, () => {
+    logger.info(`Server running on ${HOST}:${PORT}`);
   });
 }
 
