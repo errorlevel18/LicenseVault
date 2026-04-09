@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"chat.tools.terminal.autoApprove": {
+			"/^npx tsc --noEmit 2>&1 \\| Select-Object -First 30$/": {
+				"approve": true,
+				"matchCommandLine": true
+			}
+		}
+	}
+}

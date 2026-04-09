@@ -1,0 +1,29 @@
+.progress {
+  position: relative;
+  height: 6px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background-color: hsl(var(--muted));
+}
+
+.progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background-color: hsl(var(--primary));
+  transition: width 0.3s ease;
+}
+
+.progress-bar-danger {
+  background-color: hsl(var(--destructive));
+}
+
+.progress-bar-warning {
+  background-color: hsl(var(--warning));
+}
+
+.progress-bar-success {
+  background-color: hsl(var(--success));
+}
