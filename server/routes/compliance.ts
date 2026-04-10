@@ -619,7 +619,8 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
       name: environments.name,
       edition: environments.edition,
       version: environments.version,
-      type: environments.type
+      type: environments.type,
+      primaryUse: environments.primaryUse
     })
     .from(environments)
     .where(
