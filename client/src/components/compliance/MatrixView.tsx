@@ -469,7 +469,6 @@ const MatrixView: React.FC = () => {
       'Multitenant',
       'In-Memory Database',
       'Active Data Guard',
-      'Spatial and Graph',  
       'Database Vault',
       'OLAP',
       'Label Security',

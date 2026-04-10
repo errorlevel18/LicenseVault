@@ -33,7 +33,7 @@ const licenseProducts = [
   { product: 'Database Vault', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Database Vault', oracleFeatureNames: '["Oracle Database Vault","Database Vault"]' },
   { product: 'OLAP', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'OLAP', oracleFeatureNames: '["Oracle OLAP","OLAP - Analytic Workspaces"]' },
   { product: 'Advanced Analytics', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Advanced Analytics', oracleFeatureNames: '["Oracle Advanced Analytics","Oracle Data Mining","Data Mining"]' },
-  { product: 'Spatial and Graph', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Spatial and Graph', oracleFeatureNames: '["Oracle Spatial","Spatial"]' },
+  // Spatial and Graph removed — included with Oracle Database (EE, SE2, Cloud) since Dec 5 2019
   { product: 'Database In-Memory', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Database In-Memory', oracleFeatureNames: '["Oracle Database In-Memory","In-Memory Column Store","In-Memory Aggregation"]' },
   { product: 'Active Data Guard', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Active Data Guard', oracleFeatureNames: '["Active Data Guard","Oracle Active Data Guard","Active Data Guard - Real-Time Query on Physical Standby"]' },
   { product: 'Real Application Testing', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Real Application Testing', oracleFeatureNames: '["Oracle Real Application Testing","Real Application Testing","Database Replay","SQL Performance Analyzer"]' },
@@ -117,4 +117,9 @@ export function seedReferenceData(database: Database.Database): void {
       statement.run(item.product, item.onlyEnterprise, item.type, item.licenseProduct, item.oracleFeatureNames);
     }
   }
+
+  // Spatial and Graph is included with Oracle Database since Dec 5, 2019 —
+  // remove it from existing databases so it is no longer treated as a
+  // separately licensed feature.
+  database.prepare("DELETE FROM int_LicenseProducts WHERE product = 'Spatial and Graph'").run();
 }
