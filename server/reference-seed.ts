@@ -24,7 +24,7 @@ const coreFactors = [
 
 const licenseProducts = [
   { product: 'Oracle Database', onlyEnterprise: 0, type: 'Product Base', licenseProduct: 'Oracle Database', oracleFeatureNames: null },
-  { product: 'Diagnostics', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Diagnostics Pack', oracleFeatureNames: '["Diagnostics Pack","AWR Report","AWR Baseline","Active Session History","Automatic Workload Repository","ADDM"]' },
+  { product: 'Diagnostics', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Diagnostics Pack', oracleFeatureNames: '["Diagnostics Pack","AWR Report","AWR Baseline","Active Session History","Automatic Workload Repository","ADDM","EM Performance Page"]' },
   { product: 'Tuning', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Tuning Pack', oracleFeatureNames: '["Tuning Pack","SQL Tuning Advisor","Automatic SQL Tuning Advisor","SQL Tuning Set","Real-Time SQL Monitoring","SQL Tuning Set (system)","Automatic Maintenance - SQL Tuning Advisor"]' },
   { product: 'Partitioning', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Partitioning', oracleFeatureNames: '["Oracle Partitioning","Partitioning (user)","Partitioning (system)"]' },
   { product: 'Real Application Clusters', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Real Application Clusters', oracleFeatureNames: '["Oracle Real Application Clusters","Real Application Clusters (different i"]' },
@@ -41,7 +41,7 @@ const licenseProducts = [
   { product: 'Multitenant', onlyEnterprise: 1, type: 'Feature', licenseProduct: 'Multitenant', oracleFeatureNames: '["Oracle Multitenant"]' },
   { product: 'Lifecycle Management', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Lifecycle Management Pack', oracleFeatureNames: '["Lifecycle Management Pack"]' },
   { product: 'Data Masking and Subsetting', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Data Masking and Subsetting Pack', oracleFeatureNames: '["Oracle Data Masking and Subsetting","Data Masking Pack"]' },
-  { product: 'Cloud Management', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Cloud Management Pack', oracleFeatureNames: '["Cloud Management Pack for Oracle Database","EM Performance Page"]' },
+  { product: 'Cloud Management', onlyEnterprise: 1, type: 'Option Pack', licenseProduct: 'Cloud Management Pack', oracleFeatureNames: '["Cloud Management Pack for Oracle Database"]' },
 ];
 
 function countRows(database: Database.Database, tableName: string): number {
