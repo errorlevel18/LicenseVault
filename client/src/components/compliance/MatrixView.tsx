@@ -27,6 +27,7 @@ import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Separator } from '../ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { MultiSelectFilter } from '../ui/multi-select-filter';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import {
   Dialog,
@@ -402,10 +403,10 @@ const MatrixView: React.FC = () => {
   const [selectedFeature, setSelectedFeature] = useState<SelectedFeatureData | null>(null);
   const [isCalculationDetailsOpen, setIsCalculationDetailsOpen] = useState(false);
   const [hideEmptyColumns, setHideEmptyColumns] = useState(false);
-  const [filterEdition, setFilterEdition] = useState<string>('all');
-  const [filterPrimaryUse, setFilterPrimaryUse] = useState<string>('all');
-  const [filterType, setFilterType] = useState<string>('all');
-  const [filterVersion, setFilterVersion] = useState<string>('all');
+  const [filterEdition, setFilterEdition] = useState<string[]>([]);
+  const [filterPrimaryUse, setFilterPrimaryUse] = useState<string[]>([]);
+  const [filterType, setFilterType] = useState<string[]>([]);
+  const [filterVersion, setFilterVersion] = useState<string[]>([]);
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -545,15 +546,15 @@ const MatrixView: React.FC = () => {
   const filteredEnvironments = React.useMemo(() => {
     if (!matrixData?.environments) return [];
     return matrixData.environments.filter(env => {
-      if (filterEdition !== 'all' && env.edition !== filterEdition) return false;
-      if (filterPrimaryUse !== 'all' && env.primaryUse !== filterPrimaryUse) return false;
-      if (filterType !== 'all' && env.type !== filterType) return false;
-      if (filterVersion !== 'all' && env.version !== filterVersion) return false;
+      if (filterEdition.length > 0 && !filterEdition.includes(env.edition)) return false;
+      if (filterPrimaryUse.length > 0 && (!env.primaryUse || !filterPrimaryUse.includes(env.primaryUse))) return false;
+      if (filterType.length > 0 && !filterType.includes(env.type)) return false;
+      if (filterVersion.length > 0 && !filterVersion.includes(env.version)) return false;
       return true;
     });
   }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion]);
 
-  const hasActiveFilters = filterEdition !== 'all' || filterPrimaryUse !== 'all' || filterType !== 'all' || filterVersion !== 'all';
+  const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0;
 
   // Render status cell with appropriate icon
   const renderStatusCell = (
@@ -740,48 +741,40 @@ const MatrixView: React.FC = () => {
           {/* Filter bar */}
           <div className="mb-3 flex flex-wrap gap-2 items-center p-2 bg-slate-50 rounded-md border text-xs">
             <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-            <Select value={filterEdition} onValueChange={setFilterEdition}>
-              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
-                <SelectValue placeholder="Edition" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Editions</SelectItem>
-                {filterOptions.editions.map(e => <SelectItem key={e} value={e}>{e}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={filterPrimaryUse} onValueChange={setFilterPrimaryUse}>
-              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
-                <SelectValue placeholder="Primary Use" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Uses</SelectItem>
-                {filterOptions.primaryUses.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={filterType} onValueChange={setFilterType}>
-              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
-                <SelectValue placeholder="Env Type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                {filterOptions.types.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={filterVersion} onValueChange={setFilterVersion}>
-              <SelectTrigger className="h-7 w-[120px] text-xs bg-white">
-                <SelectValue placeholder="Version" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Versions</SelectItem>
-                {filterOptions.versions.map(v => <SelectItem key={v} value={v}>{v}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            <MultiSelectFilter
+              label="All Editions"
+              options={filterOptions.editions}
+              selected={filterEdition}
+              onChange={setFilterEdition}
+              className="w-[130px]"
+            />
+            <MultiSelectFilter
+              label="All Uses"
+              options={filterOptions.primaryUses}
+              selected={filterPrimaryUse}
+              onChange={setFilterPrimaryUse}
+              className="w-[130px]"
+            />
+            <MultiSelectFilter
+              label="All Types"
+              options={filterOptions.types}
+              selected={filterType}
+              onChange={setFilterType}
+              className="w-[130px]"
+            />
+            <MultiSelectFilter
+              label="All Versions"
+              options={filterOptions.versions}
+              selected={filterVersion}
+              onChange={setFilterVersion}
+              className="w-[120px]"
+            />
             {hasActiveFilters && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-7 text-xs text-gray-500"
-                onClick={() => { setFilterEdition('all'); setFilterPrimaryUse('all'); setFilterType('all'); setFilterVersion('all'); }}
+                onClick={() => { setFilterEdition([]); setFilterPrimaryUse([]); setFilterType([]); setFilterVersion([]); }}
               >
                 <X className="h-3 w-3 mr-1" />Clear
               </Button>
@@ -809,7 +802,7 @@ const MatrixView: React.FC = () => {
                 </TableHeader>
                 <TableBody>
                   {filteredEnvironments.map((env) => (
-                    <TableRow key={env.id} className="h-20">
+                    <TableRow key={env.id} className="h-10">
                       <TableCell 
                         className="font-medium bg-background sticky left-0 z-10 max-w-[150px] truncate p-1" 
                         title={env.name}
