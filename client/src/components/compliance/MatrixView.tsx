@@ -1148,7 +1148,6 @@ const MatrixView: React.FC = () => {
                             <TableCell colSpan={6} className="text-xs text-blue-700">
                               <div className="flex items-center gap-1">
                                 <Info className="h-3 w-3" />
-                                Shared hosts detected: environments on the same physical server share licenses.
                                 {sharedHostNotes.map((note, i) => (
                                   <span key={i} className="ml-1">
                                     "{note.hostName}" ({note.envNames.join(' & ')}) = {note.sharedLicenses} lic.
