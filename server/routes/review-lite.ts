@@ -83,12 +83,22 @@ function parseCpuqFile(content: string) {
   let osName = '';
   let osRelease = '';
   let cpuModel = '';
+  let isVirtual = false;
   const physicalIds = new Set<string>();
   let coresPerSocket = 0;
   let siblings = 0;
 
+  // Windows-specific fields
+  let winCpuModel = '';
+  let winProcessorCount = 0;
+  let winCoresPerProc = 0;
+  let winLogicalPerProc = 0;
+  let isWindows = false;
+
   for (const line of lines) {
     const trimmed = line.trim();
+
+    // ── Linux /proc/cpuinfo format ──
     if (trimmed.startsWith('Machine Name=')) {
       machineName = trimmed.split('=')[1]?.trim() || '';
     } else if (trimmed.startsWith('Operating System Name=')) {
@@ -108,13 +118,51 @@ function parseCpuqFile(content: string) {
       const val = parseInt(trimmed.split(':')[1]?.trim() || '0', 10);
       if (val > siblings) siblings = val;
     }
+
+    // ── Windows cpuq.cmd format ──
+    else if (trimmed.startsWith('Computer Name:')) {
+      machineName = trimmed.replace('Computer Name:', '').trim();
+      isWindows = true;
+    } else if (trimmed.startsWith('"ProcessorNameString"=')) {
+      const match = trimmed.match(/"ProcessorNameString"="([^"]+)"/);
+      if (match && !winCpuModel) winCpuModel = match[1];
+    } else if (trimmed.startsWith('VIRTUAL MACHINE RUNNING:')) {
+      isVirtual = true;
+    } else if (trimmed.startsWith('CPU NumberOfCores:')) {
+      const val = parseInt(trimmed.replace('CPU NumberOfCores:', '').trim(), 10);
+      if (!isNaN(val) && val > 0) {
+        winProcessorCount++;
+        winCoresPerProc = val; // last value (they're typically identical)
+      }
+    } else if (trimmed.startsWith('CPU NumberOfLogicalProcessors:')) {
+      const val = parseInt(trimmed.replace('CPU NumberOfLogicalProcessors:', '').trim(), 10);
+      if (!isNaN(val) && val > 0) winLogicalPerProc = val;
+    }
   }
 
-  const sockets = physicalIds.size || 1;
-  const totalCores = sockets * coresPerSocket;
-  const threadsPerCore = coresPerSocket > 0 && siblings > 0
-    ? Math.round(siblings / coresPerSocket)
-    : 1;
+  // Use Windows data if Linux fields are empty
+  if (isWindows && !cpuModel && winCpuModel) {
+    cpuModel = winCpuModel;
+  }
+
+  let sockets: number;
+  let totalCores: number;
+  let threadsPerCore: number;
+
+  if (isWindows && winProcessorCount > 0) {
+    sockets = winProcessorCount;
+    coresPerSocket = winCoresPerProc || 1;
+    totalCores = sockets * coresPerSocket;
+    threadsPerCore = winLogicalPerProc > 0 && winCoresPerProc > 0
+      ? Math.round(winLogicalPerProc / winCoresPerProc)
+      : 1;
+  } else {
+    sockets = physicalIds.size || 1;
+    totalCores = sockets * coresPerSocket;
+    threadsPerCore = coresPerSocket > 0 && siblings > 0
+      ? Math.round(siblings / coresPerSocket)
+      : 1;
+  }
 
   return {
     machineName,
@@ -125,6 +173,7 @@ function parseCpuqFile(content: string) {
     coresPerSocket,
     totalCores,
     threadsPerCore,
+    isVirtual,
   };
 }
 
@@ -559,29 +608,48 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
         }
       }
 
+      // Build a case-insensitive lookup map for DB subdirectories
+      // (Linux ext4 is case-sensitive; zip entries may differ in case from db_list.csv)
+      const dbSubdirMap = new Map<string, string>(); // lowercase → actual name on disk
+      if (fs.existsSync(dbDir)) {
+        for (const entry of fs.readdirSync(dbDir)) {
+          if (fs.statSync(path.join(dbDir, entry)).isDirectory()) {
+            dbSubdirMap.set(entry.toLowerCase(), entry);
+          }
+        }
+      }
+
       // Parse each database
       for (const dbEntry of dbList) {
-        const dbFolder = path.join(dbDir, `${dbEntry.machineName}_${dbEntry.sid}`);
-        if (!fs.existsSync(dbFolder)) continue;
+        const expectedFolder = `${dbEntry.machineName}_${dbEntry.sid}`;
+        const actualFolderName = dbSubdirMap.get(expectedFolder.toLowerCase());
+        if (!actualFolderName) continue;
+        const dbFolder = path.join(dbDir, actualFolderName);
 
         const dedupeKey = `${dbEntry.machineName}_${dbEntry.sid}`.toLowerCase();
-        if (allDatabases.has(dedupeKey)) continue; // Skip duplicates across files
+        if (allDatabases.has(dedupeKey)) continue;
 
-        const prefix = `${dbEntry.machineName}_${dbEntry.sid}_`;
+        // Resolve CSV files case-insensitively (folder contents may differ in case from db_list)
+        const folderFiles = fs.readdirSync(dbFolder);
+        const findFile = (suffix: string) => {
+          const target = `${actualFolderName}_${suffix}`.toLowerCase();
+          const found = folderFiles.find(f => f.toLowerCase() === target);
+          return found ? path.join(dbFolder, found) : null;
+        };
 
-        const versionFile = path.join(dbFolder, `${prefix}version.csv`);
-        const summaryFile = path.join(dbFolder, `${prefix}summary.csv`);
-        const featureFile = path.join(dbFolder, `${prefix}dba_feature.csv`);
-        const optionFile = path.join(dbFolder, `${prefix}v_option.csv`);
-        const parameterFile = path.join(dbFolder, `${prefix}parameter.csv`);
-        const licenseFile = path.join(dbFolder, `${prefix}license.csv`);
+        const versionFile = findFile('version.csv');
+        const summaryFile = findFile('summary.csv');
+        const featureFile = findFile('dba_feature.csv');
+        const optionFile = findFile('v_option.csv');
+        const parameterFile = findFile('parameter.csv');
+        const licenseFile = findFile('license.csv');
 
-        const versionData = fs.existsSync(versionFile) ? parseVersionCsv(fs.readFileSync(versionFile, 'utf-8')) : null;
-        const summaryData = fs.existsSync(summaryFile) ? parseSummaryCsv(fs.readFileSync(summaryFile, 'utf-8')) : null;
-        const featureData = fs.existsSync(featureFile) ? parseDbaFeatureCsv(fs.readFileSync(featureFile, 'utf-8')) : [];
-        const optionData = fs.existsSync(optionFile) ? parseVOptionCsv(fs.readFileSync(optionFile, 'utf-8')) : [];
-        const parameterData = fs.existsSync(parameterFile) ? parseParameterCsv(fs.readFileSync(parameterFile, 'utf-8')) : { cpuCount: 0 };
-        const licenseData = fs.existsSync(licenseFile) ? parseLicenseCsv(fs.readFileSync(licenseFile, 'utf-8')) : { sessionsMax: 0, sessionsHighwater: 0, sessionsCurrent: 0 };
+        const versionData = versionFile ? parseVersionCsv(fs.readFileSync(versionFile, 'utf-8')) : null;
+        const summaryData = summaryFile ? parseSummaryCsv(fs.readFileSync(summaryFile, 'utf-8')) : null;
+        const featureData = featureFile ? parseDbaFeatureCsv(fs.readFileSync(featureFile, 'utf-8')) : [];
+        const optionData = optionFile ? parseVOptionCsv(fs.readFileSync(optionFile, 'utf-8')) : [];
+        const parameterData = parameterFile ? parseParameterCsv(fs.readFileSync(parameterFile, 'utf-8')) : { cpuCount: 0 };
+        const licenseData = licenseFile ? parseLicenseCsv(fs.readFileSync(licenseFile, 'utf-8')) : { sessionsMax: 0, sessionsHighwater: 0, sessionsCurrent: 0 };
 
         let envType = 'Standalone';
         if (summaryData?.isRAC || summaryData?.databaseType === 'RAC') {
@@ -710,7 +778,7 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
       machineName: h.machineName,
       cpuModel: matchedCpuModel,
       cpuModelRaw: h.cpuModel,
-      serverType: 'Physical' as const,
+      serverType: (h.isVirtual ? 'Virtual' : 'Physical') as 'Physical' | 'Virtual',
       sockets: h.sockets,
       coresPerSocket: h.coresPerSocket,
       totalCores: h.totalCores,
