@@ -1027,7 +1027,7 @@ router.post('/save', validateRequest(saveReviewLiteSchema), async (req, res, nex
           continue;
         }
 
-        const environmentName = dbEntry.database.name || dbEntry.sid;
+        const environmentName = dbEntry.database.uniqueName || dbEntry.database.name || dbEntry.sid;
         const versionLabel = dbEntry.database.versionShort || String(parseInt(dbEntry.database.version, 10) || dbEntry.database.version);
 
         // Check for duplicate environment
