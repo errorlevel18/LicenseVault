@@ -10,6 +10,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Database, Pencil, Trash2, Plus, AlertTriangle, Copy, Filter, X, Search, ArrowDownUp, ChevronDown, ChevronRight, Users, Loader2, RefreshCw } from "lucide-react";
+import { useSortableTable } from "@/hooks/use-sortable-table";
+import { SortableTableHead } from "@/components/ui/sortable-table-head";
 import { Environment, Host, Customer } from "@/lib/types";
 import { storageService } from "@/lib/storageService";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -351,15 +353,18 @@ export function EnvironmentList() {
     }
   };
 
+  // Sort environments
+  const { sortedData: sortedEnvironments, sortConfig, requestSort } = useSortableTable(filteredEnvironments);
+
   // Group environments by different criteria
   const groupedEnvironments = React.useMemo(() => {
     if (groupBy === 'none') {
-      return { 'All Environments': filteredEnvironments };
+      return { 'All Environments': sortedEnvironments };
     }
     
     const grouped: Record<string, EnvironmentWithCustomer[]> = {};
     
-    filteredEnvironments.forEach(env => {
+    sortedEnvironments.forEach(env => {
       let groupKey: string;
       
       switch(groupBy) {
@@ -395,7 +400,7 @@ export function EnvironmentList() {
         return acc;
       }, {} as Record<string, EnvironmentWithCustomer[]>);
       
-  }, [filteredEnvironments, groupBy]);
+  }, [sortedEnvironments, groupBy]);
   
   // Initialize expanded state for all groups
   useEffect(() => {
@@ -738,14 +743,14 @@ export function EnvironmentList() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Customer</TableHead>
-              <TableHead>Edition</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Primary Use</TableHead>
-              <TableHead>DB Type</TableHead>
-              <TableHead>Instances</TableHead>
+              <SortableTableHead column="name" sortConfig={sortConfig} onSort={requestSort}>Name</SortableTableHead>
+              <SortableTableHead column="customerName" sortConfig={sortConfig} onSort={requestSort}>Customer</SortableTableHead>
+              <SortableTableHead column="edition" sortConfig={sortConfig} onSort={requestSort}>Edition</SortableTableHead>
+              <SortableTableHead column="version" sortConfig={sortConfig} onSort={requestSort}>Version</SortableTableHead>
+              <SortableTableHead column="type" sortConfig={sortConfig} onSort={requestSort}>Type</SortableTableHead>
+              <SortableTableHead column="primaryUse" sortConfig={sortConfig} onSort={requestSort}>Primary Use</SortableTableHead>
+              <SortableTableHead column="dbType" sortConfig={sortConfig} onSort={requestSort}>DB Type</SortableTableHead>
+              <SortableTableHead column="instances" sortConfig={sortConfig} onSort={requestSort}>Instances</SortableTableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>

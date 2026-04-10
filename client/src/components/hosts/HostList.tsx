@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Pencil, Trash2, Plus, AlertTriangle, Copy, ChevronRight, ChevronDown, Search, X, Database, Server } from "lucide-react";
+import { useSortableTable } from "@/hooks/use-sortable-table";
+import { SortableTableHead } from "@/components/ui/sortable-table-head";
 import { Host, Environment } from "@/lib/types";
 import { storageService } from "@/lib/storageService";
 import { useSelectedCustomerId } from "@/hooks/use-selected-customer";
@@ -546,6 +548,9 @@ export function HostList() {
     return matchesSearch && matchesType;
   }) : [];
 
+  // Sort filtered hosts
+  const { sortedData: sortedFilteredHosts, sortConfig, requestSort } = useSortableTable(filteredHosts);
+
 
   // Verificar si hay hosts virtuales dependientes del host a clonar
   const getVirtualHostsForPhysical = (physicalHostId: string): Host[] => {
@@ -573,15 +578,15 @@ export function HostList() {
   const hasActiveFilters = searchTerm !== "" || typeFilter !== "all";
 
   // Agrupar hosts filtrados por tipo - fix case sensitivity issues
-  const filteredPhysicalHosts = Array.isArray(filteredHosts) ? filteredHosts.filter(h => 
+  const filteredPhysicalHosts = Array.isArray(sortedFilteredHosts) ? sortedFilteredHosts.filter(h => 
     h.serverType === "Physical"
   ) : [];
   
-  const filteredOrphanVirtualHosts = Array.isArray(filteredHosts) ? filteredHosts.filter(h => 
+  const filteredOrphanVirtualHosts = Array.isArray(sortedFilteredHosts) ? sortedFilteredHosts.filter(h => 
     h.serverType === "Virtual" && !h.physicalHostId
   ) : [];
   
-  const filteredCloudHosts = Array.isArray(filteredHosts) ? filteredHosts.filter(h => 
+  const filteredCloudHosts = Array.isArray(sortedFilteredHosts) ? sortedFilteredHosts.filter(h => 
     h.serverType === "Oracle Cloud"
   ) : [];
 
@@ -669,13 +674,13 @@ export function HostList() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Host Name</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>Virtualization Type</TableHead>
-              <TableHead>CPU Model</TableHead>
-              <TableHead>Cores</TableHead>
-              <TableHead>Sockets</TableHead>
-              <TableHead>Hard Partitioning</TableHead>
+              <SortableTableHead column="name" sortConfig={sortConfig} onSort={requestSort}>Host Name</SortableTableHead>
+              <SortableTableHead column="serverType" sortConfig={sortConfig} onSort={requestSort}>Type</SortableTableHead>
+              <SortableTableHead column="virtualizationType" sortConfig={sortConfig} onSort={requestSort}>Virtualization Type</SortableTableHead>
+              <SortableTableHead column="cpuModel" sortConfig={sortConfig} onSort={requestSort}>CPU Model</SortableTableHead>
+              <SortableTableHead column="cores" sortConfig={sortConfig} onSort={requestSort}>Cores</SortableTableHead>
+              <SortableTableHead column="sockets" sortConfig={sortConfig} onSort={requestSort}>Sockets</SortableTableHead>
+              <SortableTableHead column="hasHardPartitioning" sortConfig={sortConfig} onSort={requestSort}>Hard Partitioning</SortableTableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>

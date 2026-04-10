@@ -610,12 +610,20 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
       }
 
       // Parse CPUQ file for hardware info
+      // The CPUQ machine name is the real OS-level hostname of the server where
+      // the script ran.  We use it as the authoritative hostname for every
+      // database discovered inside this same archive, because Oracle instances
+      // may each report a different HOST_NAME in version.csv / GV$INSTANCE.
+      let cpuqMachineName = '';
       if (fs.existsSync(cpuqDir)) {
         const cpuqFiles = fs.readdirSync(cpuqDir).filter(f => f.endsWith('.txt'));
         for (const cpuqFile of cpuqFiles) {
           const cpuqData = parseCpuqFile(fs.readFileSync(path.join(cpuqDir, cpuqFile), 'utf-8'));
-          if (cpuqData.machineName && !allHosts.has(cpuqData.machineName.toLowerCase())) {
-            allHosts.set(cpuqData.machineName.toLowerCase(), cpuqData);
+          if (cpuqData.machineName) {
+            if (!cpuqMachineName) cpuqMachineName = cpuqData.machineName;
+            if (!allHosts.has(cpuqData.machineName.toLowerCase())) {
+              allHosts.set(cpuqData.machineName.toLowerCase(), cpuqData);
+            }
           }
         }
       }
@@ -674,7 +682,10 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
         const version = versionData?.version || summaryData?.instanceVersion || '';
         const majorVersion = parseInt(version, 10) || 0;
         const edition = versionData?.edition || summaryData?.instanceEdition || 'Enterprise';
-        const hostName = versionData?.hostName || summaryData?.instanceHost || dbEntry.machineName;
+        // Use the CPUQ machine name as the authoritative hostname for this
+        // server.  Fall back to the Oracle-reported values only when CPUQ
+        // data is unavailable (e.g. missing CPUQ folder).
+        const hostName = cpuqMachineName || versionData?.hostName || summaryData?.instanceHost || dbEntry.machineName;
 
         allDatabases.set(dedupeKey, {
           sid: dbEntry.sid,

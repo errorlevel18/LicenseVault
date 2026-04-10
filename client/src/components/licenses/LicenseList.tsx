@@ -6,6 +6,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Tag,Pencil, Trash2, Plus, Link as LinkIcon, Network, Filter, ArrowDownUp, ChevronRight, ChevronDown, Search, X, Ban } from "lucide-react";
+import { useSortableTable } from "@/hooks/use-sortable-table";
+import { SortableTableHead } from "@/components/ui/sortable-table-head";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { License } from "@/lib/types";
@@ -192,21 +194,24 @@ export function LicenseList() {
       });
   }, [licenses, filterTerm, filterStatus, filterMetric]); // Dependencies are correct
 
-  // Group licenses (remains synchronous, operates on filtered results)
+  // Sort filtered licenses
+  const { sortedData: sortedLicenses, sortConfig, requestSort } = useSortableTable(filteredLicenses);
+
+  // Group licenses (remains synchronous, operates on sorted results)
   const groupedLicenses = useMemo(() => {
     // Early exit if no licenses after filtering
-    if (filteredLicenses.length === 0) {
+    if (sortedLicenses.length === 0) {
         return {};
     }
 
     if (groupBy === 'none') {
       // Use a consistent structure even when not grouping
-      return { 'All Licenses': filteredLicenses };
+      return { 'All Licenses': sortedLicenses };
     }
 
     const grouped: Record<string, ExtendedLicense[]> = {};
 
-    filteredLicenses.forEach(license => {
+    sortedLicenses.forEach(license => {
       let groupKey: string;
 
       switch(groupBy) {
@@ -259,7 +264,7 @@ export function LicenseList() {
         return acc;
       }, {} as Record<string, ExtendedLicense[]>);
 
-  }, [filteredLicenses, groupBy]); // Dependency is correct
+  }, [sortedLicenses, groupBy]); // Dependency is correct
 
   // Initialize/reset expanded state when grouping/filters change the groups
    useEffect(() => {
@@ -554,13 +559,13 @@ export function LicenseList() {
           <TableHeader>
              {/* Keep header consistent, grouping adds rows below */}
             <TableRow className="bg-slate-50 hover:bg-slate-100">
-              <TableHead className="whitespace-nowrap px-3 py-2">Product</TableHead>
-              <TableHead className="whitespace-nowrap px-3 py-2">Edition</TableHead>
-              <TableHead className="whitespace-nowrap px-3 py-2">CSI</TableHead>
-              <TableHead className="whitespace-nowrap px-3 py-2">Metric</TableHead>
-              <TableHead className="text-right whitespace-nowrap px-3 py-2">Quantity</TableHead>
-              <TableHead className="text-right whitespace-nowrap px-3 py-2">Usage (%)</TableHead>
-              <TableHead className="whitespace-nowrap px-3 py-2">Expiration</TableHead>
+              <SortableTableHead column="product" sortConfig={sortConfig} onSort={requestSort} className="whitespace-nowrap px-3 py-2">Product</SortableTableHead>
+              <SortableTableHead column="edition" sortConfig={sortConfig} onSort={requestSort} className="whitespace-nowrap px-3 py-2">Edition</SortableTableHead>
+              <SortableTableHead column="csi" sortConfig={sortConfig} onSort={requestSort} className="whitespace-nowrap px-3 py-2">CSI</SortableTableHead>
+              <SortableTableHead column="metric" sortConfig={sortConfig} onSort={requestSort} className="whitespace-nowrap px-3 py-2">Metric</SortableTableHead>
+              <SortableTableHead column="quantity" sortConfig={sortConfig} onSort={requestSort} className="text-right whitespace-nowrap px-3 py-2">Quantity</SortableTableHead>
+              <SortableTableHead column="quantityUsed" sortConfig={sortConfig} onSort={requestSort} className="text-right whitespace-nowrap px-3 py-2">Usage (%)</SortableTableHead>
+              <SortableTableHead column="endDate" sortConfig={sortConfig} onSort={requestSort} className="whitespace-nowrap px-3 py-2">Expiration</SortableTableHead>
               <TableHead className="whitespace-nowrap px-3 py-2">Status</TableHead>
               <TableHead className="text-right whitespace-nowrap px-3 py-2">Actions</TableHead>
             </TableRow>
