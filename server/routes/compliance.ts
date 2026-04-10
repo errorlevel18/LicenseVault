@@ -782,8 +782,19 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
       const hasEnoughLicenses = processorLicensesVariance >= 0;
       
       // Get instances for this environment
-      const environmentInstances = await db.select().from(instances)
+      const rawInstances = await db.select({
+        id: instances.id,
+        environmentId: instances.environmentId,
+        hostId: instances.hostId,
+        name: instances.name,
+        isPrimary: instances.isPrimary,
+        status: instances.status,
+        hostName: hosts.name,
+      })
+        .from(instances)
+        .leftJoin(hosts, eq(instances.hostId, hosts.id))
         .where(eq(instances.environmentId, env.id));
+      const environmentInstances = rawInstances;
       
       // Generate warnings for this environment
       const envWarnings: string[] = [];

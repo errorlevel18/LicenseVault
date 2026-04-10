@@ -64,6 +64,7 @@ type InstanceData = {
   name: string;
   environmentId?: string;
   hostId: string;
+  hostName?: string;
   isPrimary?: boolean;
   status?: string;
   sessions?: number;
@@ -409,6 +410,7 @@ const MatrixView: React.FC = () => {
   const [filterType, setFilterType] = useState<string[]>([]);
   const [filterVersion, setFilterVersion] = useState<string[]>([]);
   const [filterRole, setFilterRole] = useState<string[]>([]);
+  const [filterHost, setFilterHost] = useState<string[]>([]);
   const [envSortDirection, setEnvSortDirection] = useState<'asc' | 'desc'>('asc');
 
   useEffect(() => {
@@ -526,18 +528,24 @@ const MatrixView: React.FC = () => {
 
   // Filter options derived from data
   const filterOptions = React.useMemo(() => {
-    if (!matrixData?.environments?.length) return { editions: [], primaryUses: [], types: [], versions: [], roles: [] };
+    if (!matrixData?.environments?.length) return { editions: [], primaryUses: [], types: [], versions: [], roles: [], hosts: [] };
     const editions = new Set<string>();
     const primaryUses = new Set<string>();
     const types = new Set<string>();
     const versions = new Set<string>();
     const roles = new Set<string>();
+    const hostNames = new Set<string>();
     for (const env of matrixData.environments) {
       if (env.edition) editions.add(env.edition);
       if (env.primaryUse) primaryUses.add(env.primaryUse);
       if (env.type) types.add(env.type);
       if (env.version) versions.add(env.version);
       if (env.databaseRole) roles.add(env.databaseRole);
+      if (env.instances) {
+        for (const inst of env.instances) {
+          if (inst.hostName) hostNames.add(inst.hostName);
+        }
+      }
     }
     return {
       editions: Array.from(editions).sort(),
@@ -545,6 +553,7 @@ const MatrixView: React.FC = () => {
       types: Array.from(types).sort(),
       versions: Array.from(versions).sort((a, b) => Number(a) - Number(b)),
       roles: Array.from(roles).sort(),
+      hosts: Array.from(hostNames).sort(),
     };
   }, [matrixData]);
 
@@ -557,6 +566,10 @@ const MatrixView: React.FC = () => {
       if (filterType.length > 0 && !filterType.includes(env.type)) return false;
       if (filterVersion.length > 0 && !filterVersion.includes(env.version)) return false;
       if (filterRole.length > 0 && (!env.databaseRole || !filterRole.includes(env.databaseRole))) return false;
+      if (filterHost.length > 0) {
+        const envHosts = env.instances?.map(i => i.hostName).filter(Boolean) || [];
+        if (!filterHost.some(h => envHosts.includes(h))) return false;
+      }
       return true;
     });
     filtered.sort((a, b) => {
@@ -564,9 +577,33 @@ const MatrixView: React.FC = () => {
       return envSortDirection === 'asc' ? cmp : -cmp;
     });
     return filtered;
-  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole, envSortDirection]);
+  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole, filterHost, envSortDirection]);
 
-  const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0 || filterRole.length > 0;
+  const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0 || filterRole.length > 0 || filterHost.length > 0;
+
+  const clearAllFilters = () => { setFilterEdition([]); setFilterPrimaryUse([]); setFilterType([]); setFilterVersion([]); setFilterRole([]); setFilterHost([]); };
+
+  const filterBar = (
+    <div className="mb-3 flex flex-wrap gap-2 items-center p-2 bg-slate-50 rounded-md border text-xs">
+      <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+      <MultiSelectFilter label="All Editions" options={filterOptions.editions} selected={filterEdition} onChange={setFilterEdition} className="w-[130px]" />
+      <MultiSelectFilter label="All Uses" options={filterOptions.primaryUses} selected={filterPrimaryUse} onChange={setFilterPrimaryUse} className="w-[130px]" />
+      <MultiSelectFilter label="All Types" options={filterOptions.types} selected={filterType} onChange={setFilterType} className="w-[130px]" />
+      <MultiSelectFilter label="All Versions" options={filterOptions.versions} selected={filterVersion} onChange={setFilterVersion} className="w-[120px]" />
+      <MultiSelectFilter label="All Roles" options={filterOptions.roles} selected={filterRole} onChange={setFilterRole} className="w-[120px]" />
+      <MultiSelectFilter label="All Hosts" options={filterOptions.hosts} selected={filterHost} onChange={setFilterHost} className="w-[150px]" />
+      {hasActiveFilters && (
+        <Button variant="ghost" size="sm" className="h-7 text-xs text-gray-500" onClick={clearAllFilters}>
+          <X className="h-3 w-3 mr-1" />Clear
+        </Button>
+      )}
+      {hasActiveFilters && (
+        <span className="text-muted-foreground ml-auto">
+          {filteredEnvironments.length} of {matrixData?.environments?.length || 0}
+        </span>
+      )}
+    </div>
+  );
 
   // Render status cell with appropriate icon
   const renderStatusCell = (
@@ -750,60 +787,7 @@ const MatrixView: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="px-2">
-          {/* Filter bar */}
-          <div className="mb-3 flex flex-wrap gap-2 items-center p-2 bg-slate-50 rounded-md border text-xs">
-            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
-            <MultiSelectFilter
-              label="All Editions"
-              options={filterOptions.editions}
-              selected={filterEdition}
-              onChange={setFilterEdition}
-              className="w-[130px]"
-            />
-            <MultiSelectFilter
-              label="All Uses"
-              options={filterOptions.primaryUses}
-              selected={filterPrimaryUse}
-              onChange={setFilterPrimaryUse}
-              className="w-[130px]"
-            />
-            <MultiSelectFilter
-              label="All Types"
-              options={filterOptions.types}
-              selected={filterType}
-              onChange={setFilterType}
-              className="w-[130px]"
-            />
-            <MultiSelectFilter
-              label="All Versions"
-              options={filterOptions.versions}
-              selected={filterVersion}
-              onChange={setFilterVersion}
-              className="w-[120px]"
-            />
-            <MultiSelectFilter
-              label="All Roles"
-              options={filterOptions.roles}
-              selected={filterRole}
-              onChange={setFilterRole}
-              className="w-[120px]"
-            />
-            {hasActiveFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-xs text-gray-500"
-                onClick={() => { setFilterEdition([]); setFilterPrimaryUse([]); setFilterType([]); setFilterVersion([]); setFilterRole([]); }}
-              >
-                <X className="h-3 w-3 mr-1" />Clear
-              </Button>
-            )}
-            {hasActiveFilters && (
-              <span className="text-muted-foreground ml-auto">
-                {filteredEnvironments.length} of {matrixData?.environments?.length || 0}
-              </span>
-            )}
-          </div>
+          {filterBar}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
 
               <TabsContent value="features" className="w-full overflow-x-auto">
@@ -1048,6 +1032,7 @@ const MatrixView: React.FC = () => {
             </CardHeader>
             {!allCompliant && (
               <CardContent className="space-y-4">
+                {filterBar}
                 {/* Oracle Database Base Licenses */}
                 {hostNeeds.length > 0 && (
                   <div>
