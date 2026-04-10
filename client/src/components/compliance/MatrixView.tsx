@@ -409,7 +409,7 @@ const MatrixView: React.FC = () => {
   const [filterType, setFilterType] = useState<string[]>([]);
   const [filterVersion, setFilterVersion] = useState<string[]>([]);
   const [filterRole, setFilterRole] = useState<string[]>([]);
-  const [envSortDirection, setEnvSortDirection] = useState<'asc' | 'desc' | null>(null);
+  const [envSortDirection, setEnvSortDirection] = useState<'asc' | 'desc'>('asc');
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -559,12 +559,10 @@ const MatrixView: React.FC = () => {
       if (filterRole.length > 0 && (!env.databaseRole || !filterRole.includes(env.databaseRole))) return false;
       return true;
     });
-    if (envSortDirection) {
-      filtered.sort((a, b) => {
-        const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
-        return envSortDirection === 'asc' ? cmp : -cmp;
-      });
-    }
+    filtered.sort((a, b) => {
+      const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      return envSortDirection === 'asc' ? cmp : -cmp;
+    });
     return filtered;
   }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole, envSortDirection]);
 
@@ -814,11 +812,11 @@ const MatrixView: React.FC = () => {
                   <TableRow>
                     <TableHead
                       className="bg-background sticky left-0 z-20 px-2 cursor-pointer select-none hover:bg-muted/50"
-                      onClick={() => setEnvSortDirection(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
+                      onClick={() => setEnvSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')}
                     >
                       <div className="flex items-center gap-1">
                         Environment
-                        {envSortDirection === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : envSortDirection === 'desc' ? <ArrowDown className="h-3.5 w-3.5" /> : <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/40" />}
+                        {envSortDirection === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
                       </div>
                     </TableHead>
                     <TableHead className="text-center px-2 min-w-[60px] max-w-[80px]">Oracle Database</TableHead>
