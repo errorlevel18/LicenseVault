@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSelectedCustomerId } from '../../hooks/use-selected-customer';
 import apiClient from '../../lib/apiClient';
-import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown, EyeOff, Eye} from 'lucide-react';
+import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown, EyeOff, Eye, Filter} from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -26,6 +26,7 @@ import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 import { Separator } from '../ui/separator';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import {
   Dialog,
@@ -123,6 +124,7 @@ type EnvironmentData = {
   effectiveEdition?: string;
   version: string;
   type: string;
+  primaryUse?: string;
   baseProducts: BaseProductData[];
   features: FeatureData[];
   
@@ -400,6 +402,10 @@ const MatrixView: React.FC = () => {
   const [selectedFeature, setSelectedFeature] = useState<SelectedFeatureData | null>(null);
   const [isCalculationDetailsOpen, setIsCalculationDetailsOpen] = useState(false);
   const [hideEmptyColumns, setHideEmptyColumns] = useState(false);
+  const [filterEdition, setFilterEdition] = useState<string>('all');
+  const [filterPrimaryUse, setFilterPrimaryUse] = useState<string>('all');
+  const [filterType, setFilterType] = useState<string>('all');
+  const [filterVersion, setFilterVersion] = useState<string>('all');
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -513,6 +519,41 @@ const MatrixView: React.FC = () => {
     if (!hideEmptyColumns) return allFeatures;
     return allFeatures.filter(f => nonEmptyFeatures.has(f));
   }, [allFeatures, nonEmptyFeatures, hideEmptyColumns]);
+
+  // Filter options derived from data
+  const filterOptions = React.useMemo(() => {
+    if (!matrixData?.environments?.length) return { editions: [], primaryUses: [], types: [], versions: [] };
+    const editions = new Set<string>();
+    const primaryUses = new Set<string>();
+    const types = new Set<string>();
+    const versions = new Set<string>();
+    for (const env of matrixData.environments) {
+      if (env.edition) editions.add(env.edition);
+      if (env.primaryUse) primaryUses.add(env.primaryUse);
+      if (env.type) types.add(env.type);
+      if (env.version) versions.add(env.version);
+    }
+    return {
+      editions: Array.from(editions).sort(),
+      primaryUses: Array.from(primaryUses).sort(),
+      types: Array.from(types).sort(),
+      versions: Array.from(versions).sort((a, b) => Number(a) - Number(b)),
+    };
+  }, [matrixData]);
+
+  // Filtered environments
+  const filteredEnvironments = React.useMemo(() => {
+    if (!matrixData?.environments) return [];
+    return matrixData.environments.filter(env => {
+      if (filterEdition !== 'all' && env.edition !== filterEdition) return false;
+      if (filterPrimaryUse !== 'all' && env.primaryUse !== filterPrimaryUse) return false;
+      if (filterType !== 'all' && env.type !== filterType) return false;
+      if (filterVersion !== 'all' && env.version !== filterVersion) return false;
+      return true;
+    });
+  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion]);
+
+  const hasActiveFilters = filterEdition !== 'all' || filterPrimaryUse !== 'all' || filterType !== 'all' || filterVersion !== 'all';
 
   // Render status cell with appropriate icon
   const renderStatusCell = (
@@ -696,6 +737,61 @@ const MatrixView: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="px-2">
+          {/* Filter bar */}
+          <div className="mb-3 flex flex-wrap gap-2 items-center p-2 bg-slate-50 rounded-md border text-xs">
+            <Filter className="h-3.5 w-3.5 text-muted-foreground" />
+            <Select value={filterEdition} onValueChange={setFilterEdition}>
+              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
+                <SelectValue placeholder="Edition" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Editions</SelectItem>
+                {filterOptions.editions.map(e => <SelectItem key={e} value={e}>{e}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={filterPrimaryUse} onValueChange={setFilterPrimaryUse}>
+              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
+                <SelectValue placeholder="Primary Use" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Uses</SelectItem>
+                {filterOptions.primaryUses.map(u => <SelectItem key={u} value={u}>{u}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger className="h-7 w-[130px] text-xs bg-white">
+                <SelectValue placeholder="Env Type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                {filterOptions.types.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={filterVersion} onValueChange={setFilterVersion}>
+              <SelectTrigger className="h-7 w-[120px] text-xs bg-white">
+                <SelectValue placeholder="Version" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Versions</SelectItem>
+                {filterOptions.versions.map(v => <SelectItem key={v} value={v}>{v}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            {hasActiveFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 text-xs text-gray-500"
+                onClick={() => { setFilterEdition('all'); setFilterPrimaryUse('all'); setFilterType('all'); setFilterVersion('all'); }}
+              >
+                <X className="h-3 w-3 mr-1" />Clear
+              </Button>
+            )}
+            {hasActiveFilters && (
+              <span className="text-muted-foreground ml-auto">
+                {filteredEnvironments.length} of {matrixData?.environments?.length || 0}
+              </span>
+            )}
+          </div>
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
 
               <TabsContent value="features" className="w-full overflow-x-auto">
@@ -712,7 +808,7 @@ const MatrixView: React.FC = () => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {matrixData.environments.map((env) => (
+                  {filteredEnvironments.map((env) => (
                     <TableRow key={env.id} className="h-20">
                       <TableCell 
                         className="font-medium bg-background sticky left-0 z-10 max-w-[150px] truncate p-1" 
@@ -736,7 +832,6 @@ const MatrixView: React.FC = () => {
                              </TooltipProvider>
                            )}
                          </div>
-                         <p className="text-xs mt-1">({env.edition})</p>
                         </div>
                       </TableCell><TableCell className="text-center p-1">
                           {hasNoInstances(env) ? (

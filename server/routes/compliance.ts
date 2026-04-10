@@ -960,6 +960,7 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
         effectiveEdition,
         version: env.version,
         type: env.type,
+        primaryUse: env.primaryUse || '',
         warnings: envWarnings,
         // Pre-computed compliance status
         complianceStatus,
