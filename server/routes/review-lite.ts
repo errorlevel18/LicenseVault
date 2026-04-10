@@ -30,16 +30,19 @@ const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    // Only accept .tar.bz2 files
+    // Accept .tar.bz2 and .zip files
     if (
       file.originalname.endsWith('.tar.bz2') ||
+      file.originalname.endsWith('.zip') ||
       file.mimetype === 'application/x-bzip2' ||
       file.mimetype === 'application/x-tar' ||
+      file.mimetype === 'application/zip' ||
+      file.mimetype === 'application/x-zip-compressed' ||
       file.mimetype === 'application/octet-stream'
     ) {
       cb(null, true);
     } else {
-      cb(new Error('Only .tar.bz2 files are accepted'));
+      cb(new Error('Only .tar.bz2 or .zip files are accepted'));
     }
   },
 });
@@ -506,10 +509,16 @@ router.post('/parse', upload.array('files', 20), async (req, res, next) => {
     try {
       fs.mkdirSync(extractDir, { recursive: true });
 
+      // Extract based on file type
+      const isZip = uploadedFile.originalname.endsWith('.zip');
       try {
-        execSync(`tar -xjf "${uploadedFile.path}" -C "${extractDir}"`, { timeout: 30000 });
-      } catch (tarErr: any) {
-        logger.error(`Failed to extract ${uploadedFile.originalname}:`, tarErr.message);
+        if (isZip) {
+          execSync(`unzip -o "${uploadedFile.path}" -d "${extractDir}"`, { timeout: 60000 });
+        } else {
+          execSync(`tar -xjf "${uploadedFile.path}" -C "${extractDir}"`, { timeout: 30000 });
+        }
+      } catch (extractErr: any) {
+        logger.error(`Failed to extract ${uploadedFile.originalname}:`, extractErr.message);
         continue; // Skip this file, try others
       }
 

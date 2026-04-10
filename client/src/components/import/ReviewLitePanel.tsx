@@ -284,11 +284,11 @@ export default function ReviewLitePanel() {
         <CardContent>
           <div className="flex items-end gap-4">
             <div className="flex-1 space-y-2">
-              <Label htmlFor="reviewLiteFile">Ficheros Collection (.tar.bz2)</Label>
+              <Label htmlFor="reviewLiteFile">Ficheros Collection (.tar.bz2, .zip)</Label>
               <Input
                 id="reviewLiteFile"
                 type="file"
-                accept=".tar.bz2,.bz2"
+                accept=".tar.bz2,.bz2,.zip"
                 multiple
                 onChange={handleFileChange}
                 className="cursor-pointer"
