@@ -182,7 +182,8 @@ CREATE TABLE IF NOT EXISTS "int_LicenseProducts" (
 	"product"	TEXT NOT NULL UNIQUE,
 	"only_enterprise"	INTEGER DEFAULT 0,
 	"type"	TEXT,
-	"License_Product"	TEXT
+    "License_Product"	TEXT,
+    "oracle_feature_names"	TEXT
 );
 
 -- Create indexes for better performance

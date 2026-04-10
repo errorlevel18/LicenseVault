@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import * as schema from '../shared/schema.js';
 import logger from './utils/logger.js';
+import { seedReferenceData } from './reference-seed.js';
 
 // Set the database file path
 const __filename = fileURLToPath(import.meta.url);
@@ -86,6 +87,7 @@ const sqlite = new Database(DB_PATH, {
 });
 
 initializeSchemaIfNeeded(sqlite);
+seedReferenceData(sqlite);
 warnIfNoActiveAdminUser(sqlite);
 
 // Create the Drizzle ORM database object
