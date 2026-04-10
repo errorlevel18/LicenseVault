@@ -503,6 +503,7 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
   const allHosts: Map<string, ReturnType<typeof parseCpuqFile>> = new Map();
   const allDatabases: Map<string, any> = new Map(); // key = machineName_SID
   const fileNames: string[] = [];
+  const skippedFiles: { name: string; reason: string }[] = [];
 
   for (const uploadedFile of uploadedFiles) {
     const extractDir = path.join(os.tmpdir(), `review_lite_${uuidv4()}`);
@@ -519,6 +520,7 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
         }
       } catch (extractErr: any) {
         logger.error(`Failed to extract ${uploadedFile.originalname}:`, extractErr.message);
+        skippedFiles.push({ name: uploadedFile.originalname, reason: 'Error al extraer el archivo' });
         continue; // Skip this file, try others
       }
 
@@ -625,6 +627,7 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
       }
     } catch (err: any) {
       logger.error(`Error parsing file ${uploadedFile.originalname}:`, err);
+      skippedFiles.push({ name: uploadedFile.originalname, reason: err.message || 'Error desconocido' });
     } finally {
       try {
         if (uploadedFile?.path) fs.unlinkSync(uploadedFile.path);
@@ -718,6 +721,7 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
 
   const result = {
     fileNames,
+    skippedFiles,
     hosts: hostsArray,
     databases: databaseResults,
   };

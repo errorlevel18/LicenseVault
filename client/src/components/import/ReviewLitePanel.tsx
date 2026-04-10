@@ -98,6 +98,7 @@ type ReviewLiteDatabase = {
 
 type ReviewLiteParseResult = {
   fileNames: string[];
+  skippedFiles: { name: string; reason: string }[];
   hosts: ReviewLiteHost[];
   databases: ReviewLiteDatabase[];
 };
@@ -318,6 +319,31 @@ export default function ReviewLitePanel() {
       {/* Parse Results */}
       {parseResult && (
         <>
+          {/* Parse Summary */}
+          <Card>
+            <CardContent className="pt-4 pb-4">
+              <div className="text-sm space-y-1">
+                <p>
+                  <span className="font-semibold">{parseResult.fileNames.length}</span> de{' '}
+                  <span className="font-semibold">{parseResult.fileNames.length + (parseResult.skippedFiles?.length || 0)}</span>{' '}
+                  fichero(s) procesados correctamente →{' '}
+                  <span className="font-semibold">{parseResult.hosts.length}</span> host(s),{' '}
+                  <span className="font-semibold">{parseResult.databases.length}</span> base(s) de datos
+                </p>
+                {parseResult.skippedFiles?.length > 0 && (
+                  <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-yellow-800 text-xs">
+                    <p className="font-semibold">⚠ {parseResult.skippedFiles.length} fichero(s) no se pudieron procesar:</p>
+                    <ul className="list-disc list-inside mt-1">
+                      {parseResult.skippedFiles.map((sf, i) => (
+                        <li key={i}>{sf.name}: {sf.reason}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Host Information */}
           {parseResult.hosts.length > 0 && (
             <Card>
