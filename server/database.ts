@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import * as schema from '../shared/schema.js';
 import logger from './utils/logger.js';
 import { seedReferenceData } from './reference-seed.js';
+import { applySchemaCompatibilityFixes } from './schema-compat.js';
 
 // Set the database file path
 const __filename = fileURLToPath(import.meta.url);
@@ -87,6 +88,7 @@ const sqlite = new Database(DB_PATH, {
 });
 
 initializeSchemaIfNeeded(sqlite);
+applySchemaCompatibilityFixes(sqlite);
 seedReferenceData(sqlite);
 warnIfNoActiveAdminUser(sqlite);
 
