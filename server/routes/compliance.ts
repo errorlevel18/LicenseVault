@@ -620,7 +620,8 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
       edition: environments.edition,
       version: environments.version,
       type: environments.type,
-      primaryUse: environments.primaryUse
+      primaryUse: environments.primaryUse,
+      isDataGuard: environments.isDataGuard
     })
     .from(environments)
     .where(
@@ -962,6 +963,7 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
         version: env.version,
         type: env.type,
         primaryUse: env.primaryUse || '',
+        databaseRole: env.isDataGuard ? 'Data Guard' : 'Primary',
         warnings: envWarnings,
         // Pre-computed compliance status
         complianceStatus,

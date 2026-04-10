@@ -126,6 +126,7 @@ type EnvironmentData = {
   version: string;
   type: string;
   primaryUse?: string;
+  databaseRole?: string;
   baseProducts: BaseProductData[];
   features: FeatureData[];
   
@@ -407,6 +408,7 @@ const MatrixView: React.FC = () => {
   const [filterPrimaryUse, setFilterPrimaryUse] = useState<string[]>([]);
   const [filterType, setFilterType] = useState<string[]>([]);
   const [filterVersion, setFilterVersion] = useState<string[]>([]);
+  const [filterRole, setFilterRole] = useState<string[]>([]);
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -523,22 +525,25 @@ const MatrixView: React.FC = () => {
 
   // Filter options derived from data
   const filterOptions = React.useMemo(() => {
-    if (!matrixData?.environments?.length) return { editions: [], primaryUses: [], types: [], versions: [] };
+    if (!matrixData?.environments?.length) return { editions: [], primaryUses: [], types: [], versions: [], roles: [] };
     const editions = new Set<string>();
     const primaryUses = new Set<string>();
     const types = new Set<string>();
     const versions = new Set<string>();
+    const roles = new Set<string>();
     for (const env of matrixData.environments) {
       if (env.edition) editions.add(env.edition);
       if (env.primaryUse) primaryUses.add(env.primaryUse);
       if (env.type) types.add(env.type);
       if (env.version) versions.add(env.version);
+      if (env.databaseRole) roles.add(env.databaseRole);
     }
     return {
       editions: Array.from(editions).sort(),
       primaryUses: Array.from(primaryUses).sort(),
       types: Array.from(types).sort(),
       versions: Array.from(versions).sort((a, b) => Number(a) - Number(b)),
+      roles: Array.from(roles).sort(),
     };
   }, [matrixData]);
 
@@ -550,11 +555,12 @@ const MatrixView: React.FC = () => {
       if (filterPrimaryUse.length > 0 && (!env.primaryUse || !filterPrimaryUse.includes(env.primaryUse))) return false;
       if (filterType.length > 0 && !filterType.includes(env.type)) return false;
       if (filterVersion.length > 0 && !filterVersion.includes(env.version)) return false;
+      if (filterRole.length > 0 && (!env.databaseRole || !filterRole.includes(env.databaseRole))) return false;
       return true;
     });
-  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion]);
+  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole]);
 
-  const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0;
+  const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0 || filterRole.length > 0;
 
   // Render status cell with appropriate icon
   const renderStatusCell = (
@@ -769,12 +775,19 @@ const MatrixView: React.FC = () => {
               onChange={setFilterVersion}
               className="w-[120px]"
             />
+            <MultiSelectFilter
+              label="All Roles"
+              options={filterOptions.roles}
+              selected={filterRole}
+              onChange={setFilterRole}
+              className="w-[120px]"
+            />
             {hasActiveFilters && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-7 text-xs text-gray-500"
-                onClick={() => { setFilterEdition([]); setFilterPrimaryUse([]); setFilterType([]); setFilterVersion([]); }}
+                onClick={() => { setFilterEdition([]); setFilterPrimaryUse([]); setFilterType([]); setFilterVersion([]); setFilterRole([]); }}
               >
                 <X className="h-3 w-3 mr-1" />Clear
               </Button>
