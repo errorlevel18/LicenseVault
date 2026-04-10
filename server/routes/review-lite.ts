@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
+import AdmZip from 'adm-zip';
 import { v4 as uuidv4 } from 'uuid';
 import logger from '../utils/logger';
 import db from '../database';
@@ -514,7 +515,8 @@ router.post('/parse', upload.array('files', 50), async (req, res, next) => {
       const isZip = uploadedFile.originalname.endsWith('.zip');
       try {
         if (isZip) {
-          execSync(`unzip -o "${uploadedFile.path}" -d "${extractDir}"`, { timeout: 60000 });
+          const zip = new AdmZip(uploadedFile.path);
+          zip.extractAllTo(extractDir, true);
         } else {
           execSync(`tar -xjf "${uploadedFile.path}" -C "${extractDir}"`, { timeout: 30000 });
         }

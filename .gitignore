@@ -8,5 +8,4 @@ data/oralicensemgr.db
 data/oralicensemgr.db-shm
 data/oralicensemgr.db-wal
 data/oralicensemgr.db.sql
-data/oralicensemgr.db-shm
-data/oralicensemgr.db-wal
+Collection-*
