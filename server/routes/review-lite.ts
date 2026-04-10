@@ -1182,6 +1182,25 @@ router.post('/save', validateRequest(saveReviewLiteSchema), async (req, res, nex
         }
       }
 
+      // Post-hoc RAC detection: if an environment has instances on 2+ distinct
+      // hosts, it is a RAC cluster regardless of what DATABASE_TYPE reported.
+      const processedEnvIds = new Set(createdEnvironments.map(e => e.id));
+      for (const envId of processedEnvIds) {
+        const envInstances = await tx
+          .select({ hostId: instances.hostId })
+          .from(instances)
+          .where(eq(instances.environmentId, envId))
+          .execute();
+        const distinctHosts = new Set(envInstances.map((i: any) => i.hostId));
+        if (distinctHosts.size >= 2) {
+          await tx
+            .update(environments)
+            .set({ type: 'RAC', updatedAt: new Date().toISOString() })
+            .where(eq(environments.id, envId))
+            .execute();
+        }
+      }
+
       return {
         hostIds: Array.from(hostIdMap.values()),
         hostNames: allHostInfos.map(h => h.machineName),
