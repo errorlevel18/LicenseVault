@@ -125,6 +125,9 @@ export default function ReviewLitePanel() {
   const [primaryUseOptions, setPrimaryUseOptions] = useState<string[]>([]);
   const [primaryUseByDb, setPrimaryUseByDb] = useState<Record<string, string>>({});
 
+  // Physical host assignment for virtual hosts
+  const [physicalHostMap, setPhysicalHostMap] = useState<Record<string, string>>({});
+
   // Expanded features view
   const [expandedDb, setExpandedDb] = useState<string | null>(null);
 
@@ -214,6 +217,20 @@ export default function ReviewLitePanel() {
       return;
     }
 
+    // Validate virtual hosts have a physical host assigned
+    if (createHost && parseResult.hosts.length > 0) {
+      const unassignedVirtual = parseResult.hosts
+        .filter(h => h.serverType === 'Virtual' && !physicalHostMap[h.machineName]);
+      if (unassignedVirtual.length > 0) {
+        toast({
+          title: 'Error',
+          description: `Asigna un host físico a: ${unassignedVirtual.map(h => h.machineName).join(', ')}`,
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     setIsSaving(true);
     try {
       const payload = {
@@ -237,9 +254,11 @@ export default function ReviewLitePanel() {
         hosts: parseResult.hosts.length > 0 ? parseResult.hosts.map(h => ({
           machineName: h.machineName,
           cpuModel: h.cpuModel,
+          serverType: h.serverType,
           sockets: h.sockets,
           totalCores: h.totalCores,
           threadsPerCore: h.threadsPerCore,
+          physicalHostRef: physicalHostMap[h.machineName] || undefined,
         })) : undefined,
         hostId: !createHost ? selectedHostId : undefined,
       };
@@ -364,25 +383,60 @@ export default function ReviewLitePanel() {
                       <TableHead className="text-center">Cores</TableHead>
                       <TableHead className="text-center">Threads/Core</TableHead>
                       <TableHead className="text-center">Core Factor</TableHead>
+                      <TableHead>Host Físico</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {parseResult.hosts.map(h => (
-                      <TableRow key={h.machineName}>
-                        <TableCell className="font-semibold">{h.machineName}</TableCell>
-                        <TableCell>{h.serverType}</TableCell>
-                        <TableCell>
-                          <div className="text-sm">{h.cpuModel}</div>
-                          {h.cpuModelRaw !== h.cpuModel && (
-                            <div className="text-xs text-muted-foreground">{h.cpuModelRaw}</div>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-center">{h.sockets}</TableCell>
-                        <TableCell className="text-center font-semibold">{h.totalCores}</TableCell>
-                        <TableCell className="text-center">{h.threadsPerCore}</TableCell>
-                        <TableCell className="text-center">{h.coreFactor}</TableCell>
-                      </TableRow>
-                    ))}
+                    {parseResult.hosts.map(h => {
+                      const isVirtual = h.serverType === 'Virtual';
+                      const physicalHosts = parseResult.hosts.filter(ph => ph.serverType === 'Physical');
+                      return (
+                        <TableRow key={h.machineName}>
+                          <TableCell className="font-semibold">{h.machineName}</TableCell>
+                          <TableCell>
+                            <Badge variant={isVirtual ? 'secondary' : 'default'}>{h.serverType}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <div className="text-sm">{h.cpuModel}</div>
+                            {h.cpuModelRaw !== h.cpuModel && (
+                              <div className="text-xs text-muted-foreground">{h.cpuModelRaw}</div>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">{h.sockets}</TableCell>
+                          <TableCell className="text-center font-semibold">{h.totalCores}</TableCell>
+                          <TableCell className="text-center">{h.threadsPerCore}</TableCell>
+                          <TableCell className="text-center">{h.coreFactor}</TableCell>
+                          <TableCell>
+                            {isVirtual ? (
+                              <Select
+                                value={physicalHostMap[h.machineName] || ''}
+                                onValueChange={val => setPhysicalHostMap(prev => ({ ...prev, [h.machineName]: val }))}
+                              >
+                                <SelectTrigger className="w-[220px] h-8 text-xs">
+                                  <SelectValue placeholder="Asignar host físico..." />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {physicalHosts.map(ph => (
+                                    <SelectItem key={`new_${ph.machineName}`} value={`new:${ph.machineName}`}>
+                                      {ph.machineName} (importando)
+                                    </SelectItem>
+                                  ))}
+                                  {availableHosts
+                                    .filter(eh => eh.serverType === 'Physical')
+                                    .map(eh => (
+                                      <SelectItem key={eh.id} value={`existing:${eh.id}`}>
+                                        {eh.name} (existente{eh.cores ? ` — ${eh.cores} cores` : ''})
+                                      </SelectItem>
+                                    ))}
+                                </SelectContent>
+                              </Select>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </CardContent>

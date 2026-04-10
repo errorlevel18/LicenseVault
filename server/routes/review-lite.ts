@@ -851,9 +851,11 @@ const saveReviewLiteSchema = z.object({
     hosts: z.array(z.object({
       machineName: z.string(),
       cpuModel: z.string(),
+      serverType: z.string().optional(),
       sockets: z.number(),
       totalCores: z.number(),
       threadsPerCore: z.number(),
+      physicalHostRef: z.string().optional(), // "new:<machineName>" or "existing:<hostId>"
     })).optional(),
     hostId: z.string().optional(), // Existing host ID to assign instead of creating new
   }),
@@ -882,11 +884,12 @@ router.post('/save', validateRequest(saveReviewLiteSchema), async (req, res, nex
         // Pre-load all core factors for matching
         const allFactors = await tx.select().from(intCoreFactor).execute();
 
+        // First pass: create/find Physical hosts
         for (const hostInfo of allHostInfos) {
+          if ((hostInfo as any).serverType === 'Virtual') continue; // Handle virtual hosts in second pass
           const key = hostInfo.machineName.toLowerCase();
-          if (hostIdMap.has(key)) continue; // Already processed
+          if (hostIdMap.has(key)) continue;
 
-          // Find best core factor match
           let coreFactor = 0.5;
           let matchedCpuModel = hostInfo.cpuModel || 'Unknown';
           if (hostInfo.cpuModel) {
@@ -894,52 +897,91 @@ router.post('/save', validateRequest(saveReviewLiteSchema), async (req, res, nex
             let bestMatch: { cpuModel: string; coreFactor: number } | null = null;
             for (const row of allFactors) {
               if (normalizedModel.includes(row.cpuModel.toLowerCase())) {
-                if (!bestMatch || row.cpuModel.length > bestMatch.cpuModel.length) {
-                  bestMatch = row;
-                }
+                if (!bestMatch || row.cpuModel.length > bestMatch.cpuModel.length) bestMatch = row;
               }
             }
-            if (bestMatch) {
-              coreFactor = bestMatch.coreFactor;
-              matchedCpuModel = bestMatch.cpuModel;
-            }
+            if (bestMatch) { coreFactor = bestMatch.coreFactor; matchedCpuModel = bestMatch.cpuModel; }
           }
 
-          // Check if host already exists
           const existingHost = await tx
-            .select()
-            .from(hosts)
-            .where(and(
-              eq(hosts.customerId, customerId),
-              sql`lower(${hosts.name}) = lower(${hostInfo.machineName})`,
-            ))
-            .limit(1)
-            .execute();
+            .select().from(hosts)
+            .where(and(eq(hosts.customerId, customerId), sql`lower(${hosts.name}) = lower(${hostInfo.machineName})`))
+            .limit(1).execute();
 
           if (existingHost.length > 0) {
             hostIdMap.set(key, existingHost[0].id);
             logger.info(`Review Lite: Reusing existing host "${hostInfo.machineName}" (${existingHost[0].id})`);
           } else {
             const newHostId = uuidv4();
-            await tx
-              .insert(hosts)
-              .values({
-                id: newHostId,
-                customerId,
-                name: hostInfo.machineName,
-                cpuModel: matchedCpuModel,
-                serverType: hostOverrides?.serverType || 'Physical',
-                sockets: hostInfo.sockets || 1,
-                cores: hostInfo.totalCores || 1,
-                threadsPerCore: hostInfo.threadsPerCore || 1,
-                coreFactor,
-                status: 'Active',
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-              })
-              .execute();
+            await tx.insert(hosts).values({
+              id: newHostId, customerId, name: hostInfo.machineName,
+              cpuModel: matchedCpuModel, serverType: 'Physical',
+              sockets: hostInfo.sockets || 1, cores: hostInfo.totalCores || 1,
+              threadsPerCore: hostInfo.threadsPerCore || 1, coreFactor,
+              status: 'Active', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            }).execute();
             hostIdMap.set(key, newHostId);
-            logger.info(`Review Lite: Created host "${hostInfo.machineName}" (${newHostId})`);
+            logger.info(`Review Lite: Created physical host "${hostInfo.machineName}" (${newHostId})`);
+          }
+        }
+
+        // Second pass: create/find Virtual hosts with physicalHostId
+        for (const hostInfo of allHostInfos) {
+          if ((hostInfo as any).serverType !== 'Virtual') continue;
+          const key = hostInfo.machineName.toLowerCase();
+          if (hostIdMap.has(key)) continue;
+
+          // Resolve physicalHostRef → actual host ID
+          let physicalHostId: string | null = null;
+          const ref = (hostInfo as any).physicalHostRef as string | undefined;
+          if (ref) {
+            if (ref.startsWith('new:')) {
+              const refName = ref.substring(4).toLowerCase();
+              physicalHostId = hostIdMap.get(refName) || null;
+            } else if (ref.startsWith('existing:')) {
+              physicalHostId = ref.substring(9);
+            }
+          }
+
+          let coreFactor = 0.5;
+          let matchedCpuModel = hostInfo.cpuModel || 'Unknown';
+          if (hostInfo.cpuModel) {
+            const normalizedModel = hostInfo.cpuModel.toLowerCase();
+            let bestMatch: { cpuModel: string; coreFactor: number } | null = null;
+            for (const row of allFactors) {
+              if (normalizedModel.includes(row.cpuModel.toLowerCase())) {
+                if (!bestMatch || row.cpuModel.length > bestMatch.cpuModel.length) bestMatch = row;
+              }
+            }
+            if (bestMatch) { coreFactor = bestMatch.coreFactor; matchedCpuModel = bestMatch.cpuModel; }
+          }
+
+          const existingHost = await tx
+            .select().from(hosts)
+            .where(and(eq(hosts.customerId, customerId), sql`lower(${hosts.name}) = lower(${hostInfo.machineName})`))
+            .limit(1).execute();
+
+          if (existingHost.length > 0) {
+            hostIdMap.set(key, existingHost[0].id);
+            // Update physicalHostId if not yet set
+            if (physicalHostId && !existingHost[0].physicalHostId) {
+              await tx.update(hosts).set({ physicalHostId, serverType: 'Virtual', updatedAt: new Date().toISOString() })
+                .where(eq(hosts.id, existingHost[0].id)).execute();
+            }
+            logger.info(`Review Lite: Reusing existing host "${hostInfo.machineName}" (${existingHost[0].id})`);
+          } else {
+            const newHostId = uuidv4();
+            await tx.insert(hosts).values({
+              id: newHostId, customerId, name: hostInfo.machineName,
+              cpuModel: matchedCpuModel, serverType: 'Virtual',
+              virtualizationType: 'VMware',
+              sockets: hostInfo.sockets || 1, cores: hostInfo.totalCores || 1,
+              threadsPerCore: hostInfo.threadsPerCore || 1, coreFactor,
+              physicalHostId: physicalHostId,
+              status: 'Active', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+            }).execute();
+            hostIdMap.set(key, newHostId);
+            logger.info(`Review Lite: Created virtual host "${hostInfo.machineName}" → physical "${physicalHostId}" (${newHostId})`);
           }
         }
       } else if (hostId) {
