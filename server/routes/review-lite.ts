@@ -411,14 +411,36 @@ function parseSummaryCsv(content: string) {
   }
   const multipleInstances = distinctInstIds.size >= 2;
 
-  if (gvInstDataLines.length > 1) {
-    const familyLine = gvInstDataLines[1];
-    if (familyLine.includes('RAC') && multipleInstances) {
-      result.isRAC = true;
-      result.databaseType = 'RAC';
-    } else if (familyLine.includes('SINGLE') || !multipleInstances) {
-      result.databaseType = 'SINGLE';
+  // Extract DATABASE_TYPE from GV$INSTANCE by column header position.
+  // The old approach read gvInstDataLines[1] as the "FAMILY" line, but that
+  // line was actually filtered out; index 1 was the second instance data line
+  // whose hostname (e.g. "mabd01orarac84") could false-match "RAC".
+  let detectedDbType = '';
+  for (let i = 0; i < lines.length; i++) {
+    const colIndex = lines[i].indexOf('DATABASE_TYPE');
+    if (colIndex < 0) continue;
+    for (let j = i + 1; j < lines.length; j++) {
+      const dl = lines[j];
+      if (dl.startsWith('-') || !dl.trim()) continue;
+      if (dl.includes('row selected') || dl.includes('rows selected')) break;
+      if (dl.length > colIndex) {
+        const token = dl.substring(colIndex).trim().split(/\s+/)[0];
+        if (token && !/^[-]+$/.test(token)) {
+          detectedDbType = token;
+        }
+      }
+      break;
     }
+    break;
+  }
+
+  if (detectedDbType === 'RAC' && multipleInstances) {
+    result.isRAC = true;
+    result.databaseType = 'RAC';
+  } else if (detectedDbType === 'RACONENODE') {
+    result.databaseType = 'RAC One Node';
+  } else {
+    result.databaseType = 'SINGLE';
   }
 
   return result;
