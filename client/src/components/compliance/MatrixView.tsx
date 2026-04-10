@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSelectedCustomerId } from '../../hooks/use-selected-customer';
 import apiClient from '../../lib/apiClient';
-import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown} from 'lucide-react';
+import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown, EyeOff, Eye} from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -399,6 +399,7 @@ const MatrixView: React.FC = () => {
   const [activeTab, setActiveTab] = useState('features'); // Default to features tab
   const [selectedFeature, setSelectedFeature] = useState<SelectedFeatureData | null>(null);
   const [isCalculationDetailsOpen, setIsCalculationDetailsOpen] = useState(false);
+  const [hideEmptyColumns, setHideEmptyColumns] = useState(false);
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -492,6 +493,27 @@ const MatrixView: React.FC = () => {
       return a.localeCompare(b);
     });
   }, [matrixData]);
+
+  // Compute which features have at least one non-unused status across all environments
+  const nonEmptyFeatures = React.useMemo(() => {
+    if (!matrixData?.environments?.length) return new Set<string>();
+    const used = new Set<string>();
+    for (const env of matrixData.environments) {
+      for (const feature of env.features) {
+        if (feature.status !== 'unused') {
+          used.add(feature.product);
+        }
+      }
+    }
+    return used;
+  }, [matrixData]);
+
+  // Features to display (all or only non-empty)
+  const visibleFeatures = React.useMemo(() => {
+    if (!hideEmptyColumns) return allFeatures;
+    return allFeatures.filter(f => nonEmptyFeatures.has(f));
+  }, [allFeatures, nonEmptyFeatures, hideEmptyColumns]);
+
   // Render status cell with appropriate icon
   const renderStatusCell = (
     status: FeatureStatus | BaseProductStatus,
@@ -651,7 +673,21 @@ const MatrixView: React.FC = () => {
       </div>
       <Card className="w-full">
         <CardHeader className="py-3">
-          <CardTitle>License Matrix</CardTitle>
+          <div className="flex items-center justify-between">
+            <CardTitle>License Matrix</CardTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setHideEmptyColumns(!hideEmptyColumns)}
+              className="text-xs"
+            >
+              {hideEmptyColumns ? (
+                <><Eye className="h-3.5 w-3.5 mr-1.5" />Show All Columns</>
+              ) : (
+                <><EyeOff className="h-3.5 w-3.5 mr-1.5" />Hide Empty Columns</>
+              )}
+            </Button>
+          </div>
           <CardDescription className="text-xs text-muted-foreground mt-1">
             <span className="flex items-center">
               <Info className="h-3 w-3 mr-1" /> 
@@ -668,7 +704,7 @@ const MatrixView: React.FC = () => {
                   <TableRow>
                     <TableHead className="bg-background sticky left-0 z-20 px-2">Environment</TableHead>
                     <TableHead className="text-center px-2 min-w-[60px] max-w-[80px]">Oracle Database</TableHead>
-                    {allFeatures.map((feature) => (
+                    {visibleFeatures.map((feature) => (
                        <TableHead key={feature} className="text-center px-1 min-w-[50px] max-w-[75px] text-xs leading-tight" title={feature}>
                         {feature}
                       </TableHead>
@@ -770,7 +806,7 @@ const MatrixView: React.FC = () => {
                           </div>
                         )}
                       </TableCell>
-                      {allFeatures.map((featureName) => {
+                      {visibleFeatures.map((featureName) => {
                         const feature = env.features.find(f => f.product === featureName);
                         if (!feature) {
                           return <TableCell key={`${env.id}-${featureName}`} className="text-center p-1">{renderStatusCell('unused', featureName, env, { 
