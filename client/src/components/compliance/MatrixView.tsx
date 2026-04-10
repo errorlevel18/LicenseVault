@@ -968,7 +968,11 @@ const MatrixView: React.FC = () => {
       {matrixData?.environments && matrixData.environments.length > 0 && (() => {
         const summary = matrixData.licensePurchaseSummary;
         
-        const envSummaries = matrixData.environments
+        // Set of filtered environment names/ids for filtering summary tables
+        const filteredEnvNames = new Set(filteredEnvironments.map(e => e.name));
+        const filteredEnvIds = new Set(filteredEnvironments.map(e => e.id));
+        
+        const envSummaries = filteredEnvironments
           .filter(env => !hasNoInstances(env))
           .map(env => ({
             id: env.id,
@@ -976,8 +980,9 @@ const MatrixView: React.FC = () => {
             processorNeeded: env.processorNeeded,
             processorRequired: env.processorLicensesRequired ?? 0,
           }));
-        const hostNeeds = Array.isArray(summary.hostNeeds) ? summary.hostNeeds : [];
-        const featureNeeds = Array.isArray(summary.featureNeeds)
+        const hostNeeds = (Array.isArray(summary.hostNeeds) ? summary.hostNeeds : [])
+          .filter((h: any) => !hasActiveFilters || h.environmentNames?.some((n: string) => filteredEnvNames.has(n)));
+        const featureNeeds = (Array.isArray(summary.featureNeeds)
           ? summary.featureNeeds.map((need) => ({
               ...need,
               hostNames: Array.isArray(need.hostNames) ? need.hostNames : [],
@@ -990,7 +995,8 @@ const MatrixView: React.FC = () => {
                     ? need.hostNames.length
                     : 0,
             }))
-          : [];
+          : [])
+          .filter((f: any) => !hasActiveFilters || f.environmentNames?.some((n: string) => filteredEnvNames.has(n)));
         const totalProcessorNeeded = summary.totalProcessorNeeded ?? 0;
         const deduplicatedProcessorNeeded = summary.deduplicatedProcessorNeeded ?? 0;
         const sharedHostDeduction = summary.sharedHostDeduction ?? 0;
