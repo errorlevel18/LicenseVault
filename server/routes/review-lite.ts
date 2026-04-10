@@ -368,12 +368,24 @@ function parseSummaryCsv(content: string) {
     else if (instLine.includes(' XE')) result.instanceEdition = 'Express Edition';
   }
 
-  // DATABASE_TYPE from the second GV$INSTANCE line (FAMILY line)
+  // Detect real RAC: count distinct INST_ID values in GV$INSTANCE data lines.
+  // Oracle may report DATABASE_TYPE=RAC even on single-instance databases when
+  // the RAC option is installed.  Only classify as RAC when there are 2+ instances.
+  const distinctInstIds = new Set<string>();
+  for (const dl of gvInstDataLines) {
+    const instIdMatch = dl.match(/^\s*(\d+)/);
+    if (instIdMatch) distinctInstIds.add(instIdMatch[1]);
+  }
+  const multipleInstances = distinctInstIds.size >= 2;
+
   if (gvInstDataLines.length > 1) {
     const familyLine = gvInstDataLines[1];
-    if (familyLine.includes('RAC')) result.isRAC = true;
-    if (familyLine.includes('SINGLE')) result.databaseType = 'SINGLE';
-    else if (familyLine.includes('RAC')) result.databaseType = 'RAC';
+    if (familyLine.includes('RAC') && multipleInstances) {
+      result.isRAC = true;
+      result.databaseType = 'RAC';
+    } else if (familyLine.includes('SINGLE') || !multipleInstances) {
+      result.databaseType = 'SINGLE';
+    }
   }
 
   return result;
