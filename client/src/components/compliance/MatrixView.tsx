@@ -762,6 +762,7 @@ const MatrixView: React.FC = () => {
           </CardContent>
         </Card>
       </div>
+      {filterBar}
       <Card className="w-full">
         <CardHeader className="py-3">
           <div className="flex items-center justify-between">
@@ -787,7 +788,6 @@ const MatrixView: React.FC = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="px-2">
-          {filterBar}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
 
               <TabsContent value="features" className="w-full overflow-x-auto">
@@ -1038,7 +1038,6 @@ const MatrixView: React.FC = () => {
             </CardHeader>
             {!allCompliant && (
               <CardContent className="space-y-4">
-                {filterBar}
                 {/* Oracle Database Base Licenses */}
                 {hostNeeds.length > 0 && (
                   <div>
