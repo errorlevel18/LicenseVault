@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSelectedCustomerId } from '../../hooks/use-selected-customer';
 import apiClient from '../../lib/apiClient';
-import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown, EyeOff, Eye, Filter} from 'lucide-react';
+import { AlertTriangle, Loader2, CheckCircle, XCircle, Circle, AlertCircle, HelpCircle, X, Database, Server, Info, ChevronDown, EyeOff, Eye, Filter, ArrowUp, ArrowDown, ArrowUpDown} from 'lucide-react';
 import {
   Table,
   TableBody,
@@ -409,6 +409,7 @@ const MatrixView: React.FC = () => {
   const [filterType, setFilterType] = useState<string[]>([]);
   const [filterVersion, setFilterVersion] = useState<string[]>([]);
   const [filterRole, setFilterRole] = useState<string[]>([]);
+  const [envSortDirection, setEnvSortDirection] = useState<'asc' | 'desc' | null>(null);
 
   useEffect(() => {
     setSelectedFeature(null);
@@ -547,10 +548,10 @@ const MatrixView: React.FC = () => {
     };
   }, [matrixData]);
 
-  // Filtered environments
+  // Filtered and sorted environments
   const filteredEnvironments = React.useMemo(() => {
     if (!matrixData?.environments) return [];
-    return matrixData.environments.filter(env => {
+    const filtered = matrixData.environments.filter(env => {
       if (filterEdition.length > 0 && !filterEdition.includes(env.edition)) return false;
       if (filterPrimaryUse.length > 0 && (!env.primaryUse || !filterPrimaryUse.includes(env.primaryUse))) return false;
       if (filterType.length > 0 && !filterType.includes(env.type)) return false;
@@ -558,7 +559,14 @@ const MatrixView: React.FC = () => {
       if (filterRole.length > 0 && (!env.databaseRole || !filterRole.includes(env.databaseRole))) return false;
       return true;
     });
-  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole]);
+    if (envSortDirection) {
+      filtered.sort((a, b) => {
+        const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+        return envSortDirection === 'asc' ? cmp : -cmp;
+      });
+    }
+    return filtered;
+  }, [matrixData, filterEdition, filterPrimaryUse, filterType, filterVersion, filterRole, envSortDirection]);
 
   const hasActiveFilters = filterEdition.length > 0 || filterPrimaryUse.length > 0 || filterType.length > 0 || filterVersion.length > 0 || filterRole.length > 0;
 
@@ -804,7 +812,15 @@ const MatrixView: React.FC = () => {
               <Table className="border-collapse">
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow>
-                    <TableHead className="bg-background sticky left-0 z-20 px-2">Environment</TableHead>
+                    <TableHead
+                      className="bg-background sticky left-0 z-20 px-2 cursor-pointer select-none hover:bg-muted/50"
+                      onClick={() => setEnvSortDirection(prev => prev === 'asc' ? 'desc' : prev === 'desc' ? null : 'asc')}
+                    >
+                      <div className="flex items-center gap-1">
+                        Environment
+                        {envSortDirection === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : envSortDirection === 'desc' ? <ArrowDown className="h-3.5 w-3.5" /> : <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/40" />}
+                      </div>
+                    </TableHead>
                     <TableHead className="text-center px-2 min-w-[60px] max-w-[80px]">Oracle Database</TableHead>
                     {visibleFeatures.map((feature) => (
                        <TableHead key={feature} className="text-center px-1 min-w-[50px] max-w-[75px] text-xs leading-tight" title={feature}>
