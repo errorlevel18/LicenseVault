@@ -324,9 +324,8 @@ function parseSummaryCsv(content: string) {
   const headerFields: { header: string; setter: (val: string) => void }[] = [
     { header: 'DATABASE_ROLE', setter: (val) => {
       result.databaseRole = val;
-    }},
-    { header: 'DATAGUARD_BROKER', setter: (val) => {
-      result.isDataGuard = val === 'ENABLED';
+      // A database is Data Guard if its role is any kind of STANDBY
+      result.isDataGuard = val.includes('STANDBY');
     }},
   ];
   for (const { header, setter } of headerFields) {
