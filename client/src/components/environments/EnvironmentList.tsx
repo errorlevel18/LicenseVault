@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Database, Pencil, Trash2, Plus, AlertTriangle, Copy, Filter, X, Search, ArrowDownUp, ChevronDown, ChevronRight, Users, Loader2, RefreshCw } from "lucide-react";
+import { Database, Pencil, Trash2, Plus, AlertTriangle, Copy, Filter, X, Search, ArrowDownUp, ChevronDown, ChevronRight, Loader2, RefreshCw, Power, PowerOff, Server } from "lucide-react";
 import { useSortableTable } from "@/hooks/use-sortable-table";
 import { SortableTableHead } from "@/components/ui/sortable-table-head";
 import { Environment, Host, Customer } from "@/lib/types";
@@ -25,7 +25,7 @@ type FilterState = {
   primaryUse: string | null;
   type: string | null;
   edition: string | null;
-  customerId: string | null;
+  hostname: string | null;
 };
 
 // Define environment with customer info
@@ -35,8 +35,6 @@ interface EnvironmentWithCustomer extends Environment {
   pdbs: any[];
   featureStats: any[];
 }
-
-const NO_CUSTOMER_FILTER = "__none__";
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) {
@@ -96,7 +94,7 @@ export function EnvironmentList() {
     primaryUse: null,
     type: null,
     edition: null,
-    customerId: null,
+    hostname: null,
   });
   const [showFilters, setShowFilters] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
@@ -243,11 +241,15 @@ export function EnvironmentList() {
       filtered = filtered.filter(env => env.edition === filters.edition);
     }
     
-    // Apply Customer filter
-    if (filters.customerId) {
-      filtered = filters.customerId === NO_CUSTOMER_FILTER
-        ? filtered.filter((env) => !env.customerId)
-        : filtered.filter((env) => env.customerId === filters.customerId);
+    // Apply Hostname filter
+    if (filters.hostname) {
+      filtered = filtered.filter(env => {
+        const envHostIds = env.instances.map((i: any) => i.hostId);
+        return envHostIds.some((hId: string) => {
+          const host = hosts.find(h => h.id === hId);
+          return host?.name === filters.hostname;
+        });
+      });
     }
 
     setFilteredEnvironments(filtered);
@@ -265,10 +267,26 @@ export function EnvironmentList() {
       primaryUse: null,
       type: null,
       edition: null,
-      customerId: null
+      hostname: null
     });
     setSearchTerm("");
     setGroupBy("none");
+  };
+
+  const handleToggleLicensable = async (env: EnvironmentWithCustomer) => {
+    const newValue = !(env.licensable !== false);
+    try {
+      await storageService.updateEnvironment(env.id, { licensable: newValue });
+      setEnvironments(prev => prev.map(e => e.id === env.id ? { ...e, licensable: newValue } : e));
+      toast({
+        title: newValue ? 'Environment enabled' : 'Environment disabled',
+        description: newValue
+          ? `${env.name} will be included in compliance calculations.`
+          : `${env.name} will be excluded from compliance calculations.`,
+      });
+    } catch (error) {
+      toast({ title: 'Error', description: 'Could not update environment.', variant: 'destructive' });
+    }
   };
 
   const getHostName = (hostId: string): string => {
@@ -682,20 +700,21 @@ export function EnvironmentList() {
             </SelectContent>
           </Select>
 
-          <Select value={filters.customerId || "all"} onValueChange={(value) => handleFilterChange("customerId", value)}>
+          <Select value={filters.hostname || "all"} onValueChange={(value) => handleFilterChange("hostname", value)}>
             <SelectTrigger className="w-40 bg-white">
               <div className="flex items-center">
-                <Users className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Customer" />
+                <Server className="h-4 w-4 mr-2" />
+                <SelectValue placeholder="Hostname" />
               </div>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All Customers</SelectItem>
-              <SelectItem value={NO_CUSTOMER_FILTER}>No Customer</SelectItem>
-              {customers
-                .filter((customer) => customer.active)
-                .map((customer) => (
-                  <SelectItem key={customer.id} value={customer.id}>{customer.name}</SelectItem>
+              <SelectItem value="all">All Hosts</SelectItem>
+              {hosts
+                .map(h => h.name)
+                .filter((v, i, a) => a.indexOf(v) === i)
+                .sort()
+                .map((name) => (
+                  <SelectItem key={name} value={name}>{name}</SelectItem>
                 ))}
             </SelectContent>
           </Select>
@@ -717,7 +736,7 @@ export function EnvironmentList() {
             </SelectContent>
           </Select>
 
-          {(searchTerm || filters.primaryUse || filters.type || filters.edition || filters.customerId || groupBy !== "none") && (
+          {(searchTerm || filters.primaryUse || filters.type || filters.edition || filters.hostname || groupBy !== "none") && (
             <Button
               variant="ghost"
               size="sm"
@@ -744,7 +763,7 @@ export function EnvironmentList() {
           <TableHeader>
             <TableRow>
               <SortableTableHead column="name" sortConfig={sortConfig} onSort={requestSort}>Name</SortableTableHead>
-              <SortableTableHead column="customerName" sortConfig={sortConfig} onSort={requestSort}>Customer</SortableTableHead>
+              <SortableTableHead column="hostnames" sortConfig={sortConfig} onSort={requestSort}>Hostname</SortableTableHead>
               <SortableTableHead column="edition" sortConfig={sortConfig} onSort={requestSort}>Edition</SortableTableHead>
               <SortableTableHead column="version" sortConfig={sortConfig} onSort={requestSort}>Version</SortableTableHead>
               <SortableTableHead column="type" sortConfig={sortConfig} onSort={requestSort}>Type</SortableTableHead>
@@ -817,18 +836,21 @@ export function EnvironmentList() {
                       <TableRow key={env.id} className="bg-white hover:bg-slate-50">
                         <TableCell className="font-medium">
                             <div className="flex items-center">
-                              <Database className="h-5 w-5 text-blue-500 mr-1" />
-                              {env.name}
+                              <Database className={`h-5 w-5 mr-1 ${env.licensable === false ? 'text-gray-300' : 'text-blue-500'}`} />
+                              <span className={env.licensable === false ? 'text-gray-400' : ''}>{env.name}</span>
                             </div>
                         </TableCell>
                         <TableCell>
-                          {env.customerName ? (
-                            <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
-                              {env.customerName}
-                            </Badge>
-                          ) : (
-                            <span className="text-neutral-500 text-xs">No customer</span>
-                          )}
+                          {(() => {
+                            const envHostNames = env.instances
+                              .map((i: any) => getHostName(i.hostId))
+                              .filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+                            return envHostNames.length > 0
+                              ? envHostNames.map((hn: string) => (
+                                  <Badge key={hn} variant="outline" className="mr-1 text-xs">{hn}</Badge>
+                                ))
+                              : <span className="text-neutral-500 text-xs">No host</span>;
+                          })()}
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="bg-purple-100 text-purple-800">
@@ -854,6 +876,17 @@ export function EnvironmentList() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end space-x-2">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title={env.licensable === false ? 'Enable (include in compliance)' : 'Disable (exclude from compliance)'}
+                              onClick={() => handleToggleLicensable(env)}
+                            >
+                              {env.licensable === false
+                                ? <PowerOff className="h-4 w-4 text-gray-400" />
+                                : <Power className="h-4 w-4 text-green-500" />
+                              }
+                            </Button>
                             <Link href={`/environments/${env.id}`}>
                               <Button variant="ghost" size="icon">
                                 <Pencil className="h-4 w-4" />
