@@ -325,18 +325,28 @@ function parseSummaryCsv(content: string) {
     result.isDataGuard = dataLine.includes('ENABLED');
   }
 
-  // Try to extract DB_UNIQUE_NAME from subsequent lines.
-  // In the V$DATABASE output the second continuation data line typically contains:
-  //   "<platform>  <incarnation>  <incarnation>  <SCN> ... DB_UNIQUE_NAME ... PRIMARY_DB_UNIQUE_NAME ..."
-  // The simplest approach: look for an alphanumeric token that appears near DISABLED/ENABLED
-  // or use the dbName as fallback.
-  for (const line of vdbDataLines) {
-    const uniqueMatch = line.match(/\b([A-Za-z]\w{2,})\s+\d+\s+(?:DISABLED|ENABLED)/);
-    if (uniqueMatch) {
-      result.dbUniqueName = uniqueMatch[1];
+  // Extract DB_UNIQUE_NAME by finding the column header position and reading the
+  // value at the same character offset in the data line below it.  The old regex
+  // approach was fragile and could match DATABASE_ROLE=PRIMARY instead.
+  for (let i = 0; i < lines.length; i++) {
+    const colIndex = lines[i].indexOf('DB_UNIQUE_NAME');
+    if (colIndex < 0) continue;
+    // Skip separator lines (---) and blanks to reach the data line
+    for (let j = i + 1; j < lines.length; j++) {
+      const dl = lines[j];
+      if (dl.startsWith('-') || !dl.trim()) continue;
+      if (dl.includes('row selected') || dl.includes('rows selected')) break;
+      if (dl.length > colIndex) {
+        const token = dl.substring(colIndex).trim().split(/\s+/)[0];
+        if (token && !/^[-]+$/.test(token)) {
+          result.dbUniqueName = token;
+        }
+      }
+      break;
     }
+    break;
   }
-  // If we couldn't find it, use the dbName
+  // Fallback to dbName
   if (!result.dbUniqueName && result.dbName) {
     result.dbUniqueName = result.dbName;
   }
