@@ -326,6 +326,15 @@ class StorageService {
     }
   }
 
+  /**
+   * Delete all licenses for the current customer
+   */
+  async deleteAllLicenses(customerId: string): Promise<number> {
+    const res = await apiClient.delete(`/licenses/all?customerId=${customerId}`);
+    this.cache.t_licenses = [];
+    return res.data.deleted || 0;
+  }
+
   async clearLicenseAssignments(customerId?: string | null): Promise<string> {
     try {
       const customerIdToUse = customerId || this.getSelectedCustomerId();
@@ -567,6 +576,15 @@ class StorageService {
   }
 
   /**
+   * Delete all hosts for the current customer
+   */
+  async deleteAllHosts(customerId: string): Promise<number> {
+    const res = await apiClient.delete(`/hosts/all?customerId=${customerId}`);
+    this.cache.t_hosts = [];
+    return res.data.deleted || 0;
+  }
+
+  /**
    * Clone a host and optionally its VMs
    */
   async cloneHost(id: string, newName: string, cloneVirtualHosts: boolean = false): Promise<Host | undefined> {
@@ -748,6 +766,15 @@ class StorageService {
       logger.error(`Error deleting environment ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Delete all environments for the current customer
+   */
+  async deleteAllEnvironments(customerId: string): Promise<number> {
+    const res = await apiClient.delete(`/environments/all?customerId=${customerId}`);
+    this.cache.t_environments = [];
+    return res.data.deleted || 0;
   }
 
   /**

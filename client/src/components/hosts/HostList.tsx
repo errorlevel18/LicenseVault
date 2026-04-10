@@ -589,12 +589,50 @@ export function HostList() {
     <div>
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-2xl font-bold">Host Management</h2>
-        <Link href="/hosts/new">
-          <Button>
-            <Plus className="mr-2 h-4 w-4" />
-            Add Host
-          </Button>
-        </Link>
+        <div className="flex space-x-2">
+          {hosts.length > 0 && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete All
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>¿Eliminar todos los hosts?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Se eliminarán los {hosts.length} host(s) del cliente seleccionado, junto con sus instancias y asignaciones de cores. Esta acción no se puede deshacer.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={async () => {
+                      if (!selectedCustomerId) return;
+                      try {
+                        const deleted = await storageService.deleteAllHosts(selectedCustomerId);
+                        setHosts([]);
+                        toast({ title: 'Hosts eliminados', description: `${deleted} host(s) eliminados correctamente.` });
+                      } catch (err: any) {
+                        toast({ title: 'Error', description: err.message || 'No se pudieron eliminar los hosts.', variant: 'destructive' });
+                      }
+                    }}
+                  >
+                    Eliminar todos
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+          <Link href="/hosts/new">
+            <Button>
+              <Plus className="mr-2 h-4 w-4" />
+              Add Host
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* Filtros */}

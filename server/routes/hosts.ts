@@ -1808,6 +1808,47 @@ const deleteHostSchema = z.object({
   query: z.object({}).optional()
 });
 
+// Delete all hosts for a customer (must be before /:id to avoid matching "all" as an id)
+router.delete('/all', async (req, res, next) => {
+  try {
+    const user = req.user as any;
+    const isAdminUser = user?.role === 'admin';
+    const customerId = req.query.customerId as string;
+    if (!customerId) {
+      return res.status(400).json({ error: 'customerId query parameter is required' });
+    }
+    const userCustomerId = user.role === 'customer' ? user.id : user.customerId;
+    if (!isAdminUser && customerId !== userCustomerId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const result = await withTransaction(async (tx) => {
+      const customerHosts = await tx.select({ id: hosts.id }).from(hosts).where(eq(hosts.customerId, customerId)).execute();
+      if (customerHosts.length === 0) return { deleted: 0 };
+      const hostIds = customerHosts.map(h => h.id);
+
+      // Delete core license mappings
+      const hostCoreAssignments = await tx.select({ id: coreAssignments.id }).from(coreAssignments).where(inArray(coreAssignments.hostId, hostIds)).execute();
+      if (hostCoreAssignments.length > 0) {
+        await tx.delete(coreLicenseMappings).where(inArray(coreLicenseMappings.coreAssignmentId, hostCoreAssignments.map(a => a.id))).execute();
+      }
+      await tx.delete(coreAssignments).where(inArray(coreAssignments.hostId, hostIds)).execute();
+      await tx.delete(instances).where(inArray(instances.hostId, hostIds)).execute();
+      // Virtual hosts first to avoid FK constraint on physical_host_id
+      await tx.delete(hosts).where(and(eq(hosts.customerId, customerId), isNotNull(hosts.physicalHostId))).execute();
+      await tx.delete(hosts).where(eq(hosts.customerId, customerId)).execute();
+
+      return { deleted: customerHosts.length };
+    });
+
+    logger.info(`Deleted all ${result.deleted} hosts for customer ${customerId}`);
+    res.json({ success: true, deleted: result.deleted });
+  } catch (error) {
+    logger.error({ error }, 'Error deleting all hosts');
+    next(error);
+  }
+});
+
 /**
  * Endpoint para eliminar un host
  */

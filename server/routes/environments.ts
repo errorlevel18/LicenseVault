@@ -751,10 +751,42 @@ const deleteEnvironmentSchema = z.object({
   query: z.object({}).optional()
 });
 
+// Delete all environments for a customer (must be before /:id)
+router.delete('/all', async (req, res, next) => {
+  try {
+    const user = req.user as any;
+    const isAdminUser = user?.role === 'admin';
+    const customerId = req.query.customerId as string;
+    if (!customerId) {
+      return res.status(400).json({ error: 'customerId query parameter is required' });
+    }
+    const userCustomerId = user.role === 'customer' ? user.id : user.customerId;
+    if (!isAdminUser && customerId !== userCustomerId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const result = await withTransaction(async (tx) => {
+      const customerEnvs = await tx.select({ id: environments.id }).from(environments).where(eq(environments.customerId, customerId)).execute();
+      if (customerEnvs.length === 0) return { deleted: 0 };
+      const envIds = customerEnvs.map(e => e.id);
+
+      await tx.delete(featureStats).where(inArray(featureStats.environmentId, envIds)).execute();
+      await tx.delete(pdbs).where(inArray(pdbs.environmentId, envIds)).execute();
+      await tx.delete(instances).where(inArray(instances.environmentId, envIds)).execute();
+      await tx.delete(environments).where(eq(environments.customerId, customerId)).execute();
+
+      return { deleted: customerEnvs.length };
+    });
+
+    logger.info(`Deleted all ${result.deleted} environments for customer ${customerId}`);
+    res.json({ success: true, deleted: result.deleted });
+  } catch (error) {
+    logger.error({ error }, 'Error deleting all environments');
+    next(error);
+  }
+});
+
 /**
- * IMPORTANTE: Las rutas aquí NO deben incluir el prefijo '/api' ya que eso se agrega
- * cuando se monta el router en index.ts
- * 
  * Endpoint para eliminar un entorno y todos los datos asociados
  */
 router.delete('/:id', validateRequest(deleteEnvironmentSchema), async (req, res, next) => {

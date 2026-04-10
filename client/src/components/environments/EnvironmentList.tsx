@@ -494,6 +494,42 @@ export function EnvironmentList() {
               Add Environment
             </Button>
           </Link>
+          {environments.length > 0 && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete All
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>¿Eliminar todos los entornos?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Se eliminarán los {environments.length} entorno(s) del cliente seleccionado, junto con sus instancias, features y PDBs. Esta acción no se puede deshacer.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={async () => {
+                      if (!selectedCustomerId) return;
+                      try {
+                        const deleted = await storageService.deleteAllEnvironments(selectedCustomerId);
+                        setEnvironments([]);
+                        toast({ title: 'Entornos eliminados', description: `${deleted} entorno(s) eliminados correctamente.` });
+                      } catch (err: any) {
+                        toast({ title: 'Error', description: err.message || 'No se pudieron eliminar los entornos.', variant: 'destructive' });
+                      }
+                    }}
+                  >
+                    Eliminar todos
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
         </div>
       </div>
 

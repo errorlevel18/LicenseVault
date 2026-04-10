@@ -101,12 +101,41 @@ function deriveLicenseType(metric?: string, existingLicenseType?: string): strin
   return metric === 'Named User Plus' ? 'Named User Plus' : 'Processor';
 }
 
+// Delete all licenses for a customer (must be before /:id)
+router.delete('/all', async (req, res, next) => {
+  try {
+    const user = req.user as any;
+    const isAdminUser = user?.role === 'admin';
+    const customerId = req.query.customerId as string;
+    if (!customerId) {
+      return res.status(400).json({ error: 'customerId query parameter is required' });
+    }
+    const userCustomerId = user.role === 'customer' ? user.id : user.customerId;
+    if (!isAdminUser && customerId !== userCustomerId) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const result = await withTransaction(async (tx) => {
+      const customerLicenses = await tx.select({ id: licenses.id }).from(licenses).where(eq(licenses.customerId, customerId)).execute();
+      if (customerLicenses.length === 0) return { deleted: 0 };
+      const licenseIds = customerLicenses.map(l => l.id);
+
+      await tx.delete(coreLicenseMappings).where(inArray(coreLicenseMappings.licenseId, licenseIds)).execute();
+      await tx.delete(licenses).where(eq(licenses.customerId, customerId)).execute();
+
+      return { deleted: customerLicenses.length };
+    });
+
+    logger.info(`Deleted all ${result.deleted} licenses for customer ${customerId}`);
+    res.json({ success: true, deleted: result.deleted });
+  } catch (error) {
+    logger.error({ error }, 'Error deleting all licenses');
+    next(error);
+  }
+});
+
 /**
- * IMPORTANTE: Las rutas aquí NO deben incluir el prefijo '/api' ya que eso se agrega
- * cuando se monta el router en index.ts
- *
  * Endpoint para eliminar una licencia y limpiar todas sus referencias
- * Mueve la lógica de limpieza de referencias desde el cliente al servidor
  */
 router.delete('/:id', validateRequest(deleteLicenseSchema), async (req, res, next) => {
   const { id } = req.params;

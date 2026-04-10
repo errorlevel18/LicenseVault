@@ -10,6 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@/components/ui/input";
 import { License } from "@/lib/types";
 import { storageService } from "@/lib/storageService";
+import { useSelectedCustomerId } from "@/hooks/use-selected-customer";
+import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import logger from "@/lib/logger"; // Importamos el logger
 
@@ -23,6 +25,8 @@ interface ExtendedLicense extends Omit<License, 'edition'> {
 
 export function LicenseList() {
   const [_, navigate] = useLocation();
+  const selectedCustomerId = useSelectedCustomerId();
+  const { toast } = useToast();
   const [licenses, setLicenses] = useState<ExtendedLicense[]>([]);
   const [licenseToDelete, setLicenseToDelete] = useState<string | null>(null);
   const [filterTerm, setFilterTerm] = useState<string>("");
@@ -330,6 +334,42 @@ export function LicenseList() {
               Add License
             </Button>
           </Link>
+          {licenses.length > 0 && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete All
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>¿Eliminar todas las licencias?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Se eliminarán las {licenses.length} licencia(s) del cliente seleccionado y sus asignaciones. Esta acción no se puede deshacer.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                  <AlertDialogAction
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    onClick={async () => {
+                      if (!selectedCustomerId) return;
+                      try {
+                        const deleted = await storageService.deleteAllLicenses(selectedCustomerId);
+                        setLicenses([]);
+                        toast({ title: 'Licencias eliminadas', description: `${deleted} licencia(s) eliminadas correctamente.` });
+                      } catch (err: any) {
+                        toast({ title: 'Error', description: err.message || 'No se pudieron eliminar las licencias.', variant: 'destructive' });
+                      }
+                    }}
+                  >
+                    Eliminar todas
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
         </div>
       </div>
 
