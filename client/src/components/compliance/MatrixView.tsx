@@ -667,9 +667,9 @@ const MatrixView: React.FC = () => {
                 <TableHeader className="sticky top-0 z-10">
                   <TableRow>
                     <TableHead className="bg-background sticky left-0 z-20 px-2">Environment</TableHead>
-                    <TableHead className="text-center px-2">Oracle Database</TableHead>
+                    <TableHead className="text-center px-2 min-w-[60px] max-w-[80px]">Oracle Database</TableHead>
                     {allFeatures.map((feature) => (
-                       <TableHead key={feature} className="text-center px-2" title={feature}>
+                       <TableHead key={feature} className="text-center px-1 min-w-[50px] max-w-[75px] text-xs leading-tight" title={feature}>
                         {feature}
                       </TableHead>
                     ))}
