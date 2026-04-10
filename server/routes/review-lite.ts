@@ -309,10 +309,6 @@ function parseSummaryCsv(content: string) {
     } else if (parts.length >= 2) {
       result.dbName = parts[1]?.trim() || '';
     }
-    // Look for DATABASE_ROLE
-    if (dataLine.includes('PHYSICAL STANDBY')) result.databaseRole = 'PHYSICAL STANDBY';
-    else if (dataLine.includes('PRIMARY')) result.databaseRole = 'PRIMARY';
-    else if (dataLine.includes('LOGICAL STANDBY')) result.databaseRole = 'LOGICAL STANDBY';
     // OPEN_MODE
     if (dataLine.includes('READ WRITE')) result.openMode = 'READ WRITE';
     else if (dataLine.includes('READ ONLY WITH APPLY')) result.openMode = 'READ ONLY WITH APPLY';
@@ -321,8 +317,36 @@ function parseSummaryCsv(content: string) {
     // LOG_MODE
     if (dataLine.includes('ARCHIVELOG')) result.logMode = 'ARCHIVELOG';
     else if (dataLine.includes('NOARCHIVELOG')) result.logMode = 'NOARCHIVELOG';
-    // DATAGUARD_BROKER
-    result.isDataGuard = dataLine.includes('ENABLED');
+  }
+
+  // Extract DATABASE_ROLE and DATAGUARD_BROKER by column header position
+  // to avoid false matches (e.g. "ENABLED" in FORCE_LOGGING, "PRIMARY" in other fields).
+  const headerFields: { header: string; setter: (val: string) => void }[] = [
+    { header: 'DATABASE_ROLE', setter: (val) => {
+      result.databaseRole = val;
+    }},
+    { header: 'DATAGUARD_BROKER', setter: (val) => {
+      result.isDataGuard = val === 'ENABLED';
+    }},
+  ];
+  for (const { header, setter } of headerFields) {
+    for (let i = 0; i < lines.length; i++) {
+      const colIndex = lines[i].indexOf(header);
+      if (colIndex < 0) continue;
+      for (let j = i + 1; j < lines.length; j++) {
+        const dl = lines[j];
+        if (dl.startsWith('-') || !dl.trim()) continue;
+        if (dl.includes('row selected') || dl.includes('rows selected')) break;
+        if (dl.length > colIndex) {
+          // Read until next column (2+ spaces or end of line)
+          const remainder = dl.substring(colIndex).trimStart();
+          const token = remainder.split(/\s{2,}/)[0]?.trim();
+          if (token && !/^[-]+$/.test(token)) setter(token);
+        }
+        break;
+      }
+      break;
+    }
   }
 
   // Extract DB_UNIQUE_NAME by finding the column header position and reading the
