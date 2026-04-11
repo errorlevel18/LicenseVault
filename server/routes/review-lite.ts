@@ -610,7 +610,7 @@ function parseDbListCsv(content: string) {
 
 // ─── Parse Route ──────────────────────────────────────────────────────────────
 
-router.post('/parse', upload.array('files', 50), async (req, res, next) => {
+router.post('/parse', upload.array('files', 100), async (req, res, next) => {
   const uploadedFiles = req.files as Express.Multer.File[];
   if (!uploadedFiles || uploadedFiles.length === 0) {
     return res.status(400).json({ error: 'No files uploaded. Please select one or more .tar.bz2 files.' });
