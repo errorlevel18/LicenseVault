@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import db from '../database';
 import { hosts, licenses, coreAssignments, coreLicenseMappings } from '../../shared/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, inArray, sql, count } from 'drizzle-orm';
 import { safeOperation, withTransaction } from '../utils/error-handler';
 import logger from '../utils/logger';
 import { validateRequest } from '../middlewares/validationMiddleware';
@@ -388,21 +388,35 @@ router.get('/', async (req, res, next) => {
     
     let licensesData;
     if (customerId) {
-      // If customerId is provided, filter by it
       licensesData = await db
         .select()
         .from(licenses)
         .where(eq(licenses.customerId, customerId))
         .execute();
     } else {
-      // Otherwise return all licenses (admin only)
       licensesData = await db
         .select()
         .from(licenses)
         .execute();
     }
+
+    // Compute quantityUsed from core_license_mappings counts
+    const usageCounts = await db
+      .select({
+        licenseId: coreLicenseMappings.licenseId,
+        usedCount: count(coreLicenseMappings.coreAssignmentId),
+      })
+      .from(coreLicenseMappings)
+      .groupBy(coreLicenseMappings.licenseId)
+      .execute();
+    const usageMap = new Map(usageCounts.map(u => [u.licenseId, u.usedCount]));
+
+    const result = licensesData.map(l => ({
+      ...l,
+      quantityUsed: usageMap.get(l.id) ?? 0,
+    }));
     
-    res.json(licensesData);
+    res.json(result);
   } catch (error) {
     logger.error({ error, query: req.query }, 'Error fetching licenses');
     next(error);
@@ -431,8 +445,18 @@ router.get('/:id', async (req, res, next) => {
     if (user?.role !== 'admin' && license[0].customerId !== user.id) {
       return res.status(403).json({ error: 'Unauthorized access to license' });
     }
+
+    // Compute quantityUsed from core_license_mappings
+    const usageCount = await db
+      .select({ usedCount: count(coreLicenseMappings.coreAssignmentId) })
+      .from(coreLicenseMappings)
+      .where(eq(coreLicenseMappings.licenseId, id))
+      .execute();
     
-    res.json(license[0]);
+    res.json({
+      ...license[0],
+      quantityUsed: usageCount[0]?.usedCount ?? 0,
+    });
   } catch (error) {
     logger.error({ error, licenseId: id }, 'Error fetching license');
     next(error);

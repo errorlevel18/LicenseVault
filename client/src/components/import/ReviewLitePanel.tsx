@@ -465,9 +465,6 @@ export default function ReviewLitePanel() {
                     <TableHead>Type</TableHead>
                     <TableHead>Primary Use</TableHead>
                     <TableHead>Role</TableHead>
-                    <TableHead>Instance</TableHead>
-                    <TableHead className="text-center">Features</TableHead>
-                    <TableHead></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -477,7 +474,10 @@ export default function ReviewLitePanel() {
 
                     return (
                       <Fragment key={db.sid}>
-                        <TableRow className={selectedDbs[db.sid] ? '' : 'opacity-50'}>
+                        <TableRow
+                          className={`${selectedDbs[db.sid] ? '' : 'opacity-50'} cursor-pointer`}
+                          onClick={() => setExpandedDb(isExpanded ? null : db.sid)}
+                        >
                           <TableCell>
                             <input
                               type="checkbox"
@@ -487,8 +487,10 @@ export default function ReviewLitePanel() {
                             />
                           </TableCell>
                           <TableCell>
-                            <div className="font-semibold">{db.database.name}</div>
-                            <div className="text-xs text-muted-foreground">{db.sid}</div>
+                            <div className="font-semibold">{db.database.uniqueName || db.database.name}</div>
+                            {db.sid !== db.database.name && db.sid !== db.database.uniqueName && (
+                              <div className="text-xs text-muted-foreground">{db.sid}</div>
+                            )}
                           </TableCell>
                           <TableCell>
                             <Badge variant="outline">{db.database.edition}</Badge>
@@ -517,31 +519,13 @@ export default function ReviewLitePanel() {
                               {db.database.databaseRole}
                             </Badge>
                           </TableCell>
-                          <TableCell>
-                            <div className="text-sm">{db.instance.name}</div>
-                            <div className="text-xs text-muted-foreground">{db.instance.hostName}</div>
-                          </TableCell>
-                          <TableCell className="text-center">
-                            <div className="flex items-center justify-center gap-1">
-                              <span className="text-green-600 font-semibold">{usedFeatures.length}</span>
-                              <span className="text-muted-foreground">/ {db.features.length}</span>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setExpandedDb(isExpanded ? null : db.sid)}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
+
                         </TableRow>
 
                         {/* Expanded features detail */}
                         {isExpanded && (
                           <TableRow key={`${db.sid}-detail`}>
-                            <TableCell colSpan={10} className="bg-muted/30 p-4">
+                            <TableCell colSpan={7} className="bg-muted/30 p-4">
                               <div className="space-y-4">
                                 {/* DB Options */}
                                 {db.dbOptions.length > 0 && (
