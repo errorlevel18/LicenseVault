@@ -200,10 +200,60 @@ type LicensePurchaseSummary = {
   featureNeeds?: FeatureNeed[];
 };
 
+type LicensingUnitData = {
+  licensingHostId: string;
+  licensingHostName: string;
+  cores: number;
+  sockets: number;
+  coreFactor: number;
+  serverType: string;
+  virtualizationType: string | null;
+  hasHardPartitioning: boolean;
+  hardPartitioningValid: boolean;
+  physicalHostId: string | null;
+  environmentIds: string[];
+  environmentNames: string[];
+  editions: string[];
+  effectiveEdition: string;
+  productsInUse: string[];
+  processorDemand: number;
+  nupMinimumDemand: number;
+  licensedCores: number;
+  unlicensedCores: number;
+  licenseStatus: string;
+};
+
+type ProductDemandData = {
+  product: string;
+  edition: string;
+  totalProcessorDemand: number;
+  totalNupDemand: number;
+  processorAvailable: number;
+  nupAvailable: number;
+  processorVariance: number;
+  nupVariance: number;
+  processorOk: boolean;
+  nupOk: boolean;
+  covered: boolean;
+};
+
+type ComplianceAlertData = {
+  severity: 'error' | 'warning' | 'info';
+  environmentId?: string;
+  environmentName?: string;
+  hostId?: string;
+  hostName?: string;
+  message: string;
+  category: string;
+};
+
 type MatrixViewResponse = {
   environments: EnvironmentData[];
   sharedHostGroups: SharedHostGroup[];
   licensePurchaseSummary: LicensePurchaseSummary;
+  licensingUnits?: LicensingUnitData[];
+  productDemands?: ProductDemandData[];
+  alerts?: ComplianceAlertData[];
 };
 
 type SelectedFeatureData = {
@@ -789,6 +839,31 @@ const MatrixView: React.FC = () => {
         </CardHeader>
         <CardContent className="px-2">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <TabsList className="mb-2">
+              <TabsTrigger value="features">Feature Matrix</TabsTrigger>
+              <TabsTrigger value="licensing-units" className="flex items-center">
+                <Server className="h-3.5 w-3.5 mr-1.5" />
+                Licensing Units
+                {matrixData?.licensingUnits && (
+                  <Badge variant="outline" className="ml-1.5 h-5 px-1.5 text-xs">{matrixData.licensingUnits.length}</Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="product-demands" className="flex items-center">
+                <Database className="h-3.5 w-3.5 mr-1.5" />
+                Product Demands
+              </TabsTrigger>
+              <TabsTrigger value="alerts" className="flex items-center">
+                Alerts
+                {matrixData?.alerts && matrixData.alerts.length > 0 && (
+                  <Badge
+                    variant={matrixData.alerts.some(a => a.severity === 'error') ? 'destructive' : 'outline'}
+                    className="ml-1.5 h-5 px-1.5 text-xs"
+                  >
+                    {matrixData.alerts.length}
+                  </Badge>
+                )}
+              </TabsTrigger>
+            </TabsList>
 
               <TabsContent value="features" className="w-full overflow-x-auto">
               <Table className="border-collapse">
@@ -929,6 +1004,252 @@ const MatrixView: React.FC = () => {
                   ))}
                 </TableBody>
               </Table>
+            </TabsContent>
+
+            {/* Licensing Units Tab */}
+            <TabsContent value="licensing-units" className="w-full overflow-x-auto">
+              {(!matrixData?.licensingUnits || matrixData.licensingUnits.length === 0) ? (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <Info className="h-5 w-5 mr-2" />
+                  No licensing unit data available. Run a compliance analysis first.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[150px]">Host (Licensing Unit)</TableHead>
+                      <TableHead className="text-center">Type</TableHead>
+                      <TableHead className="text-center">Cores</TableHead>
+                      <TableHead className="text-center">Sockets</TableHead>
+                      <TableHead className="text-center">Core Factor</TableHead>
+                      <TableHead>Environments</TableHead>
+                      <TableHead className="text-center">Edition</TableHead>
+                      <TableHead className="text-center">Proc. Demand</TableHead>
+                      <TableHead className="text-center">NUP Min.</TableHead>
+                      <TableHead className="text-center">Licensed / Total</TableHead>
+                      <TableHead className="text-center">Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {matrixData.licensingUnits.map(unit => (
+                      <TableRow key={unit.licensingHostId}>
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-1.5">
+                            <Server className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            <span className="truncate">{unit.licensingHostName}</span>
+                            {unit.hasHardPartitioning && !unit.hardPartitioningValid && (
+                              <TooltipProvider>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <AlertTriangle className="h-3.5 w-3.5 text-red-500 flex-shrink-0" />
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p className="text-xs">Hard partitioning not recognized by Oracle ({unit.virtualizationType || 'unknown'})</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              </TooltipProvider>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="outline" className="text-xs">{unit.serverType}</Badge>
+                        </TableCell>
+                        <TableCell className="text-center">{unit.cores}</TableCell>
+                        <TableCell className="text-center">{unit.sockets}</TableCell>
+                        <TableCell className="text-center">{unit.coreFactor}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1">
+                            {unit.environmentNames.map(n => (
+                              <Badge key={n} variant="outline" className="text-xs">{n}</Badge>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant={unit.effectiveEdition.includes('Enterprise') ? 'default' : 'secondary'} className="text-xs">
+                            {unit.effectiveEdition}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-center font-medium">{unit.processorDemand}</TableCell>
+                        <TableCell className="text-center">{unit.nupMinimumDemand}</TableCell>
+                        <TableCell className="text-center">
+                          <span className={unit.unlicensedCores > 0 ? 'text-red-600' : 'text-green-600'}>
+                            {unit.licensedCores} / {unit.cores}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge
+                            variant={unit.licenseStatus === 'compliant' ? 'default' : 'destructive'}
+                            className={`text-xs ${unit.licenseStatus === 'compliant' ? 'bg-green-100 text-green-800' : unit.licenseStatus === 'partial' ? 'bg-amber-100 text-amber-800' : ''}`}
+                          >
+                            {unit.licenseStatus}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                  {matrixData.licensingUnits.length > 1 && (
+                    <tfoot>
+                      <tr className="bg-muted/50 font-semibold">
+                        <td className="p-2" colSpan={7}>Totals</td>
+                        <td className="p-2 text-center">
+                          {matrixData.licensingUnits.reduce((s, u) => s + u.processorDemand, 0)}
+                        </td>
+                        <td className="p-2 text-center">
+                          {matrixData.licensingUnits.reduce((s, u) => s + u.nupMinimumDemand, 0)}
+                        </td>
+                        <td className="p-2 text-center">
+                          {matrixData.licensingUnits.reduce((s, u) => s + u.licensedCores, 0)} / {matrixData.licensingUnits.reduce((s, u) => s + u.cores, 0)}
+                        </td>
+                        <td className="p-2"></td>
+                      </tr>
+                    </tfoot>
+                  )}
+                </Table>
+              )}
+              <div className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+                <Info className="h-3 w-3" />
+                A Licensing Unit is the physical host (or hard-partitioned VM) that Oracle considers the unit of licensing. Multiple environments on the same host share one licensing unit.
+              </div>
+            </TabsContent>
+
+            {/* Product Demands Tab */}
+            <TabsContent value="product-demands" className="w-full overflow-x-auto">
+              {(!matrixData?.productDemands || matrixData.productDemands.length === 0) ? (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <Info className="h-5 w-5 mr-2" />
+                  No product demand data available. Run a compliance analysis first.
+                </div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[180px]">Product</TableHead>
+                      <TableHead className="text-center">Edition</TableHead>
+                      <TableHead className="text-center">Proc. Demand</TableHead>
+                      <TableHead className="text-center">Proc. Available</TableHead>
+                      <TableHead className="text-center">Proc. Variance</TableHead>
+                      <TableHead className="text-center">NUP Demand</TableHead>
+                      <TableHead className="text-center">NUP Available</TableHead>
+                      <TableHead className="text-center">NUP Variance</TableHead>
+                      <TableHead className="text-center">Coverage</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {matrixData.productDemands.map(d => (
+                      <TableRow key={d.product} className={!d.covered ? 'bg-red-50/50' : ''}>
+                        <TableCell className="font-medium">
+                          <div className="flex items-center gap-1.5">
+                            <Database className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                            {d.product}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="outline" className="text-xs">{d.edition}</Badge>
+                        </TableCell>
+                        <TableCell className="text-center font-medium">{d.totalProcessorDemand}</TableCell>
+                        <TableCell className="text-center">{d.processorAvailable}</TableCell>
+                        <TableCell className={`text-center font-medium ${d.processorVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {d.processorVariance >= 0 ? '+' : ''}{d.processorVariance}
+                        </TableCell>
+                        <TableCell className="text-center font-medium">{d.totalNupDemand}</TableCell>
+                        <TableCell className="text-center">{d.nupAvailable}</TableCell>
+                        <TableCell className={`text-center font-medium ${d.nupVariance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {d.nupVariance >= 0 ? '+' : ''}{d.nupVariance}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {d.covered ? (
+                            <Badge className="text-xs bg-green-100 text-green-800">
+                              <CheckCircle className="h-3 w-3 mr-1" /> Covered
+                            </Badge>
+                          ) : (
+                            <Badge variant="destructive" className="text-xs">
+                              <XCircle className="h-3 w-3 mr-1" /> Insufficient
+                            </Badge>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              <div className="mt-3 text-xs text-muted-foreground flex items-center gap-1">
+                <Info className="h-3 w-3" />
+                Oracle allows EITHER Processor OR Named User Plus licensing. A product is "Covered" if at least one metric satisfies the demand.
+              </div>
+            </TabsContent>
+
+            {/* Alerts Tab */}
+            <TabsContent value="alerts" className="w-full">
+              {(!matrixData?.alerts || matrixData.alerts.length === 0) ? (
+                <div className="flex items-center justify-center h-32 text-muted-foreground">
+                  <CheckCircle className="h-5 w-5 mr-2 text-green-500" />
+                  No alerts or risks detected.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {/* Summary counters */}
+                  <div className="flex gap-3 mb-3 text-xs">
+                    {matrixData.alerts.filter(a => a.severity === 'error').length > 0 && (
+                      <span className="flex items-center gap-1 text-red-600">
+                        <XCircle className="h-3.5 w-3.5" />
+                        {matrixData.alerts.filter(a => a.severity === 'error').length} error(s)
+                      </span>
+                    )}
+                    {matrixData.alerts.filter(a => a.severity === 'warning').length > 0 && (
+                      <span className="flex items-center gap-1 text-amber-600">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        {matrixData.alerts.filter(a => a.severity === 'warning').length} warning(s)
+                      </span>
+                    )}
+                    {matrixData.alerts.filter(a => a.severity === 'info').length > 0 && (
+                      <span className="flex items-center gap-1 text-blue-600">
+                        <Info className="h-3.5 w-3.5" />
+                        {matrixData.alerts.filter(a => a.severity === 'info').length} info
+                      </span>
+                    )}
+                  </div>
+                  {/* Alert cards sorted by severity */}
+                  {[...matrixData.alerts]
+                    .sort((a, b) => {
+                      const order = { error: 0, warning: 1, info: 2 };
+                      return order[a.severity] - order[b.severity];
+                    })
+                    .map((alert, i) => (
+                      <div
+                        key={i}
+                        className={`flex items-start gap-3 p-3 rounded-lg border ${
+                          alert.severity === 'error' ? 'bg-red-50 border-red-200' :
+                          alert.severity === 'warning' ? 'bg-amber-50 border-amber-200' :
+                          'bg-blue-50 border-blue-200'
+                        }`}
+                      >
+                        {alert.severity === 'error' ? (
+                          <XCircle className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
+                        ) : alert.severity === 'warning' ? (
+                          <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5 flex-shrink-0" />
+                        ) : (
+                          <Info className="h-5 w-5 text-blue-500 mt-0.5 flex-shrink-0" />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
+                            <Badge variant="outline" className="text-xs">{alert.category}</Badge>
+                            {alert.environmentName && (
+                              <span className="text-xs text-muted-foreground">
+                                <Database className="h-3 w-3 inline mr-0.5" />{alert.environmentName}
+                              </span>
+                            )}
+                            {alert.hostName && (
+                              <span className="text-xs text-muted-foreground">
+                                <Server className="h-3 w-3 inline mr-0.5" />{alert.hostName}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-sm">{alert.message}</p>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
             </TabsContent>
           </Tabs>
         </CardContent>

@@ -22,6 +22,7 @@ import {
   filterComplianceRelevantFeatureUsage,
   getEffectiveEdition,
   detectSharedHostGroups,
+  runFullComplianceAnalysis,
 } from '../services/complianceService';
 
 const router = Router();
@@ -1083,7 +1084,17 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
       featureNeeds
     };
     
-    return res.json({ environments: matrixData, sharedHostGroups, licensePurchaseSummary });
+    // Run full Licensing Unit analysis for aggregate data
+    const fullAnalysis = await runFullComplianceAnalysis(customerId);
+
+    return res.json({
+      environments: matrixData,
+      sharedHostGroups,
+      licensePurchaseSummary,
+      licensingUnits: fullAnalysis.licensingUnits,
+      productDemands: fullAnalysis.productDemands,
+      alerts: fullAnalysis.alerts,
+    });
   } catch (error) {
     logger.error(`Error generating matrix view:`, error);
     next(error);
