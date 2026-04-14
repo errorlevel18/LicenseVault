@@ -2,15 +2,34 @@ import db from '../database';
 import logger from '../utils/logger';
 import {
   environments, instances, hosts, featureStats, licenses, coreAssignments,
-  coreLicenseMappings, intLicenseProducts
+  coreLicenseMappings, intLicenseProducts, pdbs
 } from '../../shared/schema';
 import { and, eq, like, ne, or, sql } from 'drizzle-orm';
 
-// Constants
+// ─── Constants ───────────────────────────────────────────────────────────────
+
 export const NUP_PER_PROCESSOR = 25;
 export const NUP_STANDARD_MINIMUM = 10;
 
+/** Technologies Oracle recognises as hard partitioning (case-insensitive match). */
+const APPROVED_HARD_PARTITIONING: ReadonlySet<string> = new Set([
+  'ovm',            // Oracle VM
+  'ol kvm',         // Oracle Linux KVM (since Oct 2019)
+  'oracle linux kvm',
+  'ldom',           // Solaris Logical Domains
+  'solaris zones',  // Solaris Containers / Zones (capped CPU)
+  'lpar',           // IBM LPAR with static processor assignment
+]);
+
 const SYSTEM_MANAGED_FEATURE_SUFFIX = /\s*\(system\)\s*$/i;
+
+// Products Oracle made free (no license required)
+const FREE_PRODUCTS = new Set([
+  'Spatial and Graph',
+  'Advanced Analytics', // Oracle Machine Learning — free since 2019
+]);
+
+// ─── Public helpers (re-exported for backward compat) ────────────────────────
 
 export function isSystemManagedFeatureName(featureName: string) {
   return SYSTEM_MANAGED_FEATURE_SUFFIX.test(featureName.trim());
@@ -19,700 +38,957 @@ export function isSystemManagedFeatureName(featureName: string) {
 export function filterComplianceRelevantFeatureUsage<T extends { name: string }>(
   featureUsage: T[]
 ) {
-  return featureUsage.filter((feature) => !isSystemManagedFeatureName(feature.name));
+  return featureUsage.filter((f) => !isSystemManagedFeatureName(f.name));
 }
 
-// ─── Processor License Calculation ───────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-export async function calculateProcessorLicenses(environmentId: string) {
-  const environmentInstances = await db.select().from(instances)
-    .where(eq(instances.environmentId, environmentId));
+export interface LicensingUnit {
+  licensingHostId: string;
+  licensingHostName: string;
+  cores: number;
+  sockets: number;
+  coreFactor: number;
+  serverType: string;
+  virtualizationType: string | null;
+  hasHardPartitioning: boolean;
+  hardPartitioningValid: boolean;
+  physicalHostId: string | null;
+  environmentIds: string[];
+  environmentNames: string[];
+  editions: string[];
+  effectiveEdition: string;
+  productsInUse: string[];
+  processorDemand: number;
+  nupMinimumDemand: number;
+  licensedCores: number;
+  unlicensedCores: number;
+  licenseStatus: string;
+}
 
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
+export interface ProductDemand {
+  product: string;
+  edition: string;
+  totalProcessorDemand: number;
+  totalNupDemand: number;
+  processorAvailable: number;
+  nupAvailable: number;
+  processorVariance: number;
+  nupVariance: number;
+  processorOk: boolean;
+  nupOk: boolean;
+  covered: boolean;
+}
 
-  if (!environmentData.length) {
-    throw new Error(`Environment not found: ${environmentId}`);
-  }
+export interface ComplianceAlert {
+  severity: 'error' | 'warning' | 'info';
+  environmentId?: string;
+  environmentName?: string;
+  hostId?: string;
+  hostName?: string;
+  message: string;
+  category: string;
+}
 
-  const environment = environmentData[0];
+interface FeatureIssue {
+  featureName: string;
+  featureType: string;
+  status: string;
+  issueDescription: string;
+  isLicensed: boolean;
+  licenseId?: string;
+}
 
-  // Check if Standard env uses Enterprise-only features → must license as Enterprise
-  let usesEnterpriseFeatures = false;
-  if (environment.edition.includes('Standard')) {
-    const rawFeaturesInUse = await db.select().from(featureStats)
-      .where(and(
-        eq(featureStats.environmentId, environmentId),
-        eq(featureStats.currentlyUsed, true)
-      ));
-    const featuresInUse = filterComplianceRelevantFeatureUsage(rawFeaturesInUse);
+// ─── Internal: build the oracle-feature-name → product mapping ───────────────
 
-    if (featuresInUse.length > 0) {
-      const enterpriseProducts = await db.select().from(intLicenseProducts)
-        .where(eq(intLicenseProducts.onlyEnterprise, true));
-      const enterpriseOnlyNames = new Set(enterpriseProducts.map(p => p.product));
-      usesEnterpriseFeatures = featuresInUse.some(f => enterpriseOnlyNames.has(f.name));
+async function loadFeatureProductMap() {
+  const licenseProductsData = await db.select().from(intLicenseProducts);
+  const map = new Map<string, typeof licenseProductsData[0]>();
+  const enterpriseOnly = new Set<string>();
+  for (const lp of licenseProductsData) {
+    map.set(lp.product, lp);
+    if (lp.onlyEnterprise) enterpriseOnly.add(lp.product);
+    if (lp.oracleFeatureNames) {
+      try {
+        const names: string[] = JSON.parse(lp.oracleFeatureNames);
+        for (const n of names) map.set(n, lp);
+      } catch { /* ignore bad JSON */ }
     }
   }
+  return { map, enterpriseOnly, raw: licenseProductsData };
+}
 
-  const isStandard = environment.edition.includes('Standard') && !usesEnterpriseFeatures;
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 1 — Build Licensing Units
+// ═════════════════════════════════════════════════════════════════════════════
 
-  if (environment.isDataGuard) {
-    return {
-      totalProcessorLicenses: 0,
-      totalCores: 0,
-      totalPhysicalCores: 0,
-      averageCoreFactor: 0,
-      calculationDetails: [{ note: 'Data Guard standby environment - no processor licenses required' }]
-    };
-  }
+async function buildLicensingUnits(customerId: string, environmentIds?: string[]): Promise<{
+  units: Map<string, LicensingUnit>;
+  alerts: ComplianceAlert[];
+  /** environments that have instances (were fully evaluated) */
+  evaluatedEnvIds: Set<string>;
+  /** environments with zero instances */
+  skippedEnvIds: Set<string>;
+}> {
+  const alerts: ComplianceAlert[] = [];
+  const evaluatedEnvIds = new Set<string>();
+  const skippedEnvIds = new Set<string>();
 
-  let totalProcessorLicenses = 0;
-  let totalCores = 0;
-  let totalPhysicalCores = 0;
-  let totalCoreFactor = 0;
-  const calculationDetails: any[] = [];
-  const processedPhysicalHosts = new Set<string>();
+  // Load all licensable environments
+  const allEnvironments = await db.select().from(environments)
+    .where(and(eq(environments.customerId, customerId), ne(environments.licensable, false)));
+  const targetEnvironments = environmentIds
+    ? allEnvironments.filter(e => environmentIds.includes(e.id))
+    : allEnvironments;
 
-  for (const instance of environmentInstances) {
-    const hostData = await db.select().from(hosts)
-      .where(eq(hosts.id, instance.hostId))
-      .limit(1);
+  const { map: featureNameToProduct, enterpriseOnly } = await loadFeatureProductMap();
 
-    if (!hostData.length) {
-      throw new Error(`Host not found for instance: ${instance.id}`);
+  const units = new Map<string, LicensingUnit>();
+
+  for (const env of targetEnvironments) {
+    // ── instances ──
+    const envInstances = await db.select().from(instances)
+      .where(eq(instances.environmentId, env.id));
+
+    if (envInstances.length === 0) {
+      skippedEnvIds.add(env.id);
+      alerts.push({
+        severity: 'warning', environmentId: env.id, environmentName: env.name,
+        message: 'Environment has no instances — compliance cannot be fully evaluated. Add instances to link this environment to its hosts.',
+        category: 'no-instances',
+      });
+      continue;
     }
+    evaluatedEnvIds.add(env.id);
 
-    const host = hostData[0];
-    let coreCount = 0;
-    let socketCount = host.sockets || 1;
-    let effectiveCoreFactor = host.coreFactor;
+    // ── feature usage ──
+    const allFeatures = await db.select().from(featureStats)
+      .where(eq(featureStats.environmentId, env.id));
+    const activeFeatures = allFeatures.filter(f => f.currentlyUsed === true);
+    const relevantActive = filterComplianceRelevantFeatureUsage(activeFeatures);
 
-    if (host.serverType === 'Physical') {
-      if (processedPhysicalHosts.has(host.id)) {
-        calculationDetails.push({
-          instanceId: instance.id, instanceName: instance.name,
-          hostId: host.id, hostName: host.name, serverType: host.serverType,
-          cores: 0, sockets: 0, coreFactor: effectiveCoreFactor, processorLicenses: 0,
-          hasHardPartitioning: host.hasHardPartitioning, physicalHostId: host.physicalHostId,
-          note: 'Physical host already counted (deduplication)'
-        });
-        continue;
-      }
-      processedPhysicalHosts.add(host.id);
-      coreCount = host.cores;
-      socketCount = host.sockets;
-      totalPhysicalCores += coreCount;
-    } else if (host.serverType === 'Virtual') {
-      if (host.hasHardPartitioning) {
-        const coreAssignmentCount = await db.select({ count: sql`count(*)` }).from(coreAssignments)
-          .where(eq(coreAssignments.hostId, host.id));
-        coreCount = Number(coreAssignmentCount[0].count);
-      } else if (host.physicalHostId) {
-        if (processedPhysicalHosts.has(host.physicalHostId)) {
-          calculationDetails.push({
-            instanceId: instance.id, instanceName: instance.name,
-            hostId: host.id, hostName: host.name, serverType: host.serverType,
-            cores: 0, sockets: 0, coreFactor: effectiveCoreFactor, processorLicenses: 0,
-            hasHardPartitioning: host.hasHardPartitioning, physicalHostId: host.physicalHostId,
-            note: 'Physical host already counted (deduplication)'
+    // Historical usage warnings
+    for (const feat of allFeatures) {
+      if (!feat.currentlyUsed && feat.detectedUsages && feat.detectedUsages > 0) {
+        const product = featureNameToProduct.get(feat.name);
+        if (product && !FREE_PRODUCTS.has(product.product) && !isSystemManagedFeatureName(feat.name)) {
+          alerts.push({
+            severity: 'warning', environmentId: env.id, environmentName: env.name,
+            message: `Feature "${feat.name}" has historical usage (${feat.detectedUsages} detections, last: ${feat.lastUsageDate || 'unknown'}). Oracle may claim retroactive licensing.`,
+            category: 'historical-usage',
           });
-          continue;
         }
-        processedPhysicalHosts.add(host.physicalHostId);
+      }
+    }
 
-        const physicalHostData = await db.select().from(hosts)
-          .where(eq(hosts.id, host.physicalHostId))
-          .limit(1);
+    // ── products in use ──
+    const envProducts = new Set<string>();
+    envProducts.add('Oracle Database');
 
-        if (physicalHostData.length) {
-          const physicalHost = physicalHostData[0];
-          coreCount = physicalHost.cores;
-          socketCount = physicalHost.sockets;
-          effectiveCoreFactor = physicalHost.coreFactor;
-          totalPhysicalCores += coreCount;
+    for (const feat of relevantActive) {
+      const product = featureNameToProduct.get(feat.name);
+      if (product && !FREE_PRODUCTS.has(product.product)) {
+        envProducts.add(product.product);
+      }
+    }
+    // Tuning → Diagnostics dependency
+    if (envProducts.has('Tuning')) envProducts.add('Diagnostics');
+
+    // ── edition escalation ──
+    let envEffectiveEdition = env.edition;
+    if (env.edition.includes('Standard')) {
+      const usesEE = relevantActive.some(f => {
+        const p = featureNameToProduct.get(f.name);
+        return p && enterpriseOnly.has(p.product);
+      });
+      if (usesEE) {
+        envEffectiveEdition = 'Enterprise';
+        const eeNames = relevantActive
+          .filter(f => { const p = featureNameToProduct.get(f.name); return p && enterpriseOnly.has(p.product); })
+          .map(f => f.name);
+        alerts.push({
+          severity: 'error', environmentId: env.id, environmentName: env.name,
+          message: `Standard Edition environment uses Enterprise-only features (${eeNames.join(', ')}). Enterprise Edition licensing is required.`,
+          category: 'edition-escalation',
+        });
+      }
+    }
+
+    // ── Data Guard / Active Data Guard ──
+    const usesActiveDataGuard = relevantActive.some(f => {
+      const p = featureNameToProduct.get(f.name);
+      return p && p.product === 'Active Data Guard';
+    });
+
+    if (env.isDataGuard && usesActiveDataGuard) {
+      alerts.push({
+        severity: 'error', environmentId: env.id, environmentName: env.name,
+        message: 'Active Data Guard detected on standby. Requires Active Data Guard Option Pack license. The standby server also requires base Oracle Database licenses.',
+        category: 'active-data-guard',
+      });
+    }
+
+    // ── resolve each instance to its licensing unit ──
+    for (const inst of envInstances) {
+      const hostData = await db.select().from(hosts).where(eq(hosts.id, inst.hostId)).limit(1);
+      if (!hostData.length) continue;
+      const host = hostData[0];
+
+      let luId: string, luName: string, luCores: number, luSockets: number;
+      let luCoreFactor: number, luServerType: string, luVirtType: string | null;
+      let luHasHard: boolean, hardValid = false, luPhysicalHostId: string | null;
+
+      if (host.serverType === 'Physical') {
+        luId = host.id; luName = host.name; luCores = host.cores;
+        luSockets = host.sockets; luCoreFactor = host.coreFactor;
+        luServerType = host.serverType; luVirtType = host.virtualizationType;
+        luHasHard = false; luPhysicalHostId = host.physicalHostId;
+
+      } else if (host.serverType === 'Virtual') {
+        luHasHard = host.hasHardPartitioning || false;
+        luVirtType = host.virtualizationType;
+        luPhysicalHostId = host.physicalHostId;
+        luServerType = host.serverType;
+
+        // validate hard partitioning tech
+        if (luHasHard) {
+          const vt = (luVirtType || '').toLowerCase().trim();
+          hardValid = Array.from(APPROVED_HARD_PARTITIONING).some(a => vt.includes(a));
+          if (!hardValid) {
+            alerts.push({
+              severity: 'error', environmentId: env.id, environmentName: env.name,
+              hostId: host.id, hostName: host.name,
+              message: `Hard partitioning marked on "${host.name}" (${luVirtType || 'unknown'}), but Oracle does not recognise this technology. Full physical host must be licensed.`,
+              category: 'invalid-hard-partitioning',
+            });
+          }
+        }
+
+        if (luHasHard && hardValid) {
+          // valid hard partitioning → only assigned cores
+          luId = host.id; luName = host.name;
+          const cnt = await db.select({ count: sql`count(*)` })
+            .from(coreAssignments).where(eq(coreAssignments.hostId, host.id));
+          luCores = Number(cnt[0].count) || host.cores;
+          luSockets = host.sockets; luCoreFactor = host.coreFactor;
+        } else if (host.physicalHostId) {
+          // soft partitioning → license the physical parent
+          const ph = await db.select().from(hosts).where(eq(hosts.id, host.physicalHostId)).limit(1);
+          if (ph.length) {
+            luId = ph[0].id; luName = ph[0].name; luCores = ph[0].cores;
+            luSockets = ph[0].sockets; luCoreFactor = ph[0].coreFactor;
+            luServerType = ph[0].serverType;
+            luVirtType = ph[0].virtualizationType;
+            luPhysicalHostId = ph[0].physicalHostId;
+
+            if ((host.virtualizationType || '').toLowerCase().includes('vmware')) {
+              alerts.push({
+                severity: 'warning', environmentId: env.id, environmentName: env.name,
+                hostId: host.id, hostName: host.name,
+                message: `VMware on "${host.name}". If vMotion is enabled, Oracle may require licensing ALL hosts in the vSphere cluster, not just "${ph[0].name}". Verify cluster scope.`,
+                category: 'vmware-cluster',
+              });
+            }
+          } else {
+            luId = host.id; luName = host.name; luCores = host.cores;
+            luSockets = host.sockets; luCoreFactor = host.coreFactor;
+          }
         } else {
-          coreCount = host.cores;
+          luId = host.id; luName = host.name; luCores = host.cores;
+          luSockets = host.sockets; luCoreFactor = host.coreFactor;
+        }
+
+      } else if (host.serverType === 'Oracle Cloud') {
+        luId = host.id; luName = host.name; luCores = host.cores;
+        luSockets = 1; luCoreFactor = host.coreFactor;
+        luServerType = host.serverType; luVirtType = host.virtualizationType;
+        luHasHard = false; luPhysicalHostId = host.physicalHostId;
+      } else {
+        luId = host.id; luName = host.name; luCores = host.cores;
+        luSockets = host.sockets || 1; luCoreFactor = host.coreFactor;
+        luServerType = host.serverType; luVirtType = host.virtualizationType;
+        luHasHard = false; luPhysicalHostId = host.physicalHostId;
+      }
+
+      // merge into existing unit or create new
+      const existing = units.get(luId);
+      if (existing) {
+        if (!existing.environmentIds.includes(env.id)) {
+          existing.environmentIds.push(env.id);
+          existing.environmentNames.push(env.name);
+          existing.editions.push(envEffectiveEdition);
+          for (const p of envProducts) {
+            if (!existing.productsInUse.includes(p)) existing.productsInUse.push(p);
+          }
         }
       } else {
-        coreCount = host.cores;
+        units.set(luId, {
+          licensingHostId: luId, licensingHostName: luName,
+          cores: luCores, sockets: luSockets, coreFactor: luCoreFactor,
+          serverType: luServerType, virtualizationType: luVirtType,
+          hasHardPartitioning: luHasHard, hardPartitioningValid: hardValid,
+          physicalHostId: luPhysicalHostId,
+          environmentIds: [env.id], environmentNames: [env.name],
+          editions: [envEffectiveEdition],
+          effectiveEdition: '', // resolved in Step 2
+          productsInUse: Array.from(envProducts),
+          processorDemand: 0, nupMinimumDemand: 0,
+          licensedCores: 0, unlicensedCores: 0, licenseStatus: 'unknown',
+        });
       }
-    } else if (host.serverType === 'Oracle Cloud') {
-      coreCount = host.cores;
-      socketCount = 1;
+    }
+  }
+
+  return { units, alerts, evaluatedEnvIds, skippedEnvIds };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 2 — Effective edition per Licensing Unit
+// ═════════════════════════════════════════════════════════════════════════════
+
+function resolveEffectiveEditions(units: Map<string, LicensingUnit>, alerts: ComplianceAlert[]) {
+  for (const unit of units.values()) {
+    unit.effectiveEdition = unit.editions.some(e => e.includes('Enterprise'))
+      ? 'Enterprise' : 'Standard';
+
+    if (unit.effectiveEdition.includes('Standard') && unit.sockets > 2) {
+      alerts.push({
+        severity: 'error', hostId: unit.licensingHostId, hostName: unit.licensingHostName,
+        message: `SE2 on "${unit.licensingHostName}" with ${unit.sockets} sockets. SE2 is limited to 2 sockets per server — contract violation.`,
+        category: 'se2-socket-violation',
+      });
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 3 — Processor demand per Licensing Unit
+// ═════════════════════════════════════════════════════════════════════════════
+
+function calculateProcessorDemands(
+  units: Map<string, LicensingUnit>,
+  envMap: Map<string, { isDataGuard: boolean | null; usesActiveDataGuard: boolean }>
+) {
+  for (const unit of units.values()) {
+    // Pure DG standby (no Active Data Guard) on ALL envs → 0 demand
+    const allPureDG = unit.environmentIds.every(id => {
+      const info = envMap.get(id);
+      return info && info.isDataGuard === true && !info.usesActiveDataGuard;
+    });
+    if (allPureDG) { unit.processorDemand = 0; continue; }
+
+    unit.processorDemand = unit.effectiveEdition.includes('Standard')
+      ? Math.min(unit.sockets, 2)
+      : unit.cores * unit.coreFactor;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 4 — NUP demand per Licensing Unit
+// ═════════════════════════════════════════════════════════════════════════════
+
+function calculateNupDemands(units: Map<string, LicensingUnit>) {
+  for (const unit of units.values()) {
+    if (unit.processorDemand === 0) { unit.nupMinimumDemand = 0; continue; }
+    unit.nupMinimumDemand = unit.effectiveEdition.includes('Enterprise')
+      ? unit.processorDemand * NUP_PER_PROCESSOR
+      : NUP_STANDARD_MINIMUM;
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 5 — Validate special product rules
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function validateProducts(units: Map<string, LicensingUnit>, alerts: ComplianceAlert[]) {
+  for (const unit of units.values()) {
+    // Multitenant ≤ 3 PDBs → free
+    if (unit.productsInUse.includes('Multitenant')) {
+      let allFewPDBs = true;
+      for (const envId of unit.environmentIds) {
+        const cnt = await db.select({ count: sql`count(*)` })
+          .from(pdbs).where(eq(pdbs.environmentId, envId));
+        if (Number(cnt[0]?.count || 0) > 3) { allFewPDBs = false; break; }
+      }
+      if (allFewPDBs) {
+        unit.productsInUse = unit.productsInUse.filter(p => p !== 'Multitenant');
+        alerts.push({
+          severity: 'info', hostId: unit.licensingHostId, hostName: unit.licensingHostName,
+          message: 'Multitenant with ≤ 3 PDBs — included free, no license required.',
+          category: 'multitenant-free',
+        });
+      }
+    }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 6 — Core-level license verification
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function verifyCoreAssignments(units: Map<string, LicensingUnit>) {
+  for (const unit of units.values()) {
+    const rows = await db.select({
+      coreAssignment: coreAssignments,
+      licenseMapping: coreLicenseMappings,
+      license: licenses,
+    })
+    .from(coreAssignments)
+    .leftJoin(coreLicenseMappings, eq(coreAssignments.id, coreLicenseMappings.coreAssignmentId))
+    .leftJoin(licenses, eq(coreLicenseMappings.licenseId, licenses.id))
+    .where(eq(coreAssignments.hostId, unit.licensingHostId));
+
+    const licensedCoreIds = new Set<number>();
+    const allCoreIds = new Set<number>();
+
+    for (const r of rows) {
+      allCoreIds.add(r.coreAssignment.coreId);
+      if (r.licenseMapping?.licenseId && r.license?.edition) {
+        if (unit.effectiveEdition.includes('Enterprise')) {
+          if (r.license.edition.includes('Enterprise')) licensedCoreIds.add(r.coreAssignment.coreId);
+        } else {
+          if (r.license.edition.includes('Standard') || r.license.edition.includes('Enterprise'))
+            licensedCoreIds.add(r.coreAssignment.coreId);
+        }
+      }
     }
 
-    let instanceLicenses: number;
-    if (isStandard) {
-      instanceLicenses = Math.min(socketCount, 2);
-    } else {
-      instanceLicenses = coreCount * effectiveCoreFactor;
-    }
-    totalProcessorLicenses += instanceLicenses;
-    totalCores += coreCount;
-    totalCoreFactor += (coreCount * effectiveCoreFactor);
+    unit.licensedCores = licensedCoreIds.size;
+    unit.unlicensedCores = Math.max(0, unit.cores - unit.licensedCores);
+    unit.licenseStatus = unit.unlicensedCores === 0 && unit.cores > 0
+      ? 'compliant'
+      : unit.licensedCores > 0 ? 'partial' : unit.cores > 0 ? 'non-compliant' : 'unknown';
+  }
+}
 
+// ═════════════════════════════════════════════════════════════════════════════
+// STEP 7 — Product demand totals vs license pool
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function calculateProductDemands(
+  units: Map<string, LicensingUnit>, customerId: string
+): Promise<ProductDemand[]> {
+  const allProducts = new Set<string>();
+  for (const u of units.values()) for (const p of u.productsInUse) allProducts.add(p);
+
+  const allLicenses = await db.select().from(licenses).where(eq(licenses.customerId, customerId));
+  const demands: ProductDemand[] = [];
+
+  for (const product of allProducts) {
+    let totalProc = 0, totalNup = 0;
+    const editions = new Set<string>();
+    for (const u of units.values()) {
+      if (u.productsInUse.includes(product)) {
+        totalProc += u.processorDemand;
+        totalNup += u.nupMinimumDemand;
+        editions.add(u.effectiveEdition);
+      }
+    }
+    const highEdition = editions.has('Enterprise') ? 'Enterprise' : 'Standard';
+
+    let procAvail = 0, nupAvail = 0;
+    for (const lic of allLicenses) {
+      let productMatch = product === 'Oracle Database'
+        ? lic.product.includes('Oracle Database')
+        : lic.product === product;
+      if (!productMatch) continue;
+
+      const le = lic.edition || '';
+      let editionMatch = highEdition.includes('Enterprise')
+        ? le.includes('Enterprise')
+        : (le.includes('Standard') || le.includes('Enterprise'));
+      if (product !== 'Oracle Database' && !lic.edition) editionMatch = true;
+      if (!editionMatch) continue;
+
+      if (lic.metric === 'Processor') procAvail += lic.quantity;
+      else if (lic.metric === 'Named User Plus') nupAvail += lic.quantity;
+    }
+
+    const pv = procAvail - totalProc, nv = nupAvail - totalNup;
+    const pOk = procAvail > 0 && pv >= 0, nOk = nupAvail > 0 && nv >= 0;
+    demands.push({
+      product, edition: highEdition,
+      totalProcessorDemand: totalProc, totalNupDemand: totalNup,
+      processorAvailable: procAvail, nupAvailable: nupAvail,
+      processorVariance: pv, nupVariance: nv,
+      processorOk: pOk, nupOk: nOk, covered: pOk || nOk,
+    });
+  }
+  return demands;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ORCHESTRATOR — Full compliance analysis (8 steps)
+// ═════════════════════════════════════════════════════════════════════════════
+
+export interface FullComplianceResult {
+  licensingUnits: LicensingUnit[];
+  productDemands: ProductDemand[];
+  alerts: ComplianceAlert[];
+  evaluatedEnvIds: string[];
+  skippedEnvIds: string[];
+}
+
+export async function runFullComplianceAnalysis(
+  customerId: string, environmentIds?: string[]
+): Promise<FullComplianceResult> {
+  // Step 1
+  const { units, alerts, evaluatedEnvIds, skippedEnvIds } =
+    await buildLicensingUnits(customerId, environmentIds);
+
+  // Build env info map for Steps 3 & 5
+  const { map: featureNameToProduct } = await loadFeatureProductMap();
+  const envInfoMap = new Map<string, { isDataGuard: boolean | null; usesActiveDataGuard: boolean }>();
+
+  for (const envId of evaluatedEnvIds) {
+    const envData = await db.select().from(environments).where(eq(environments.id, envId)).limit(1);
+    if (!envData.length) continue;
+    const env = envData[0];
+
+    const af = await db.select().from(featureStats)
+      .where(and(eq(featureStats.environmentId, envId), eq(featureStats.currentlyUsed, true)));
+    const usesADG = af.some(f => {
+      const p = featureNameToProduct.get(f.name);
+      return p && p.product === 'Active Data Guard';
+    });
+
+    envInfoMap.set(envId, { isDataGuard: env.isDataGuard, usesActiveDataGuard: usesADG });
+  }
+
+  // Step 2
+  resolveEffectiveEditions(units, alerts);
+  // Step 3
+  calculateProcessorDemands(units, envInfoMap);
+  // Step 4
+  calculateNupDemands(units);
+  // Step 5
+  await validateProducts(units, alerts);
+  // Step 6
+  await verifyCoreAssignments(units);
+  // Step 7
+  const productDemands = await calculateProductDemands(units, customerId);
+
+  // Step 8 — Generate summary alerts
+  for (const d of productDemands) {
+    if (!d.covered) {
+      alerts.push({
+        severity: 'error',
+        message: `Insufficient licenses for "${d.product}" (${d.edition}): Processor demand=${d.totalProcessorDemand}, available=${d.processorAvailable} (variance: ${d.processorVariance}). NUP demand=${d.totalNupDemand}, available=${d.nupAvailable} (variance: ${d.nupVariance}).`,
+        category: 'insufficient-licenses',
+      });
+    }
+  }
+
+  // SEHA info
+  for (const unit of units.values()) {
+    const envData = await db.select().from(environments)
+      .where(eq(environments.customerId, customerId));
+    const sehaEnvs = unit.environmentIds.filter(id => {
+      const e = envData.find(env => env.id === id);
+      return e && e.type === 'Oracle SEHA';
+    });
+    if (sehaEnvs.length > 0) {
+      alerts.push({
+        severity: 'info', hostId: unit.licensingHostId, hostName: unit.licensingHostName,
+        message: 'SEHA detected. Failover node covered under 10-day rule (max 10 days/year). SE2 per-server 2-socket limit applies.',
+        category: 'seha-info',
+      });
+    }
+  }
+
+  return {
+    licensingUnits: Array.from(units.values()),
+    productDemands, alerts,
+    evaluatedEnvIds: Array.from(evaluatedEnvIds),
+    skippedEnvIds: Array.from(skippedEnvIds),
+  };
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BACKWARD-COMPATIBLE WRAPPERS
+// Keep the same public API so routes don't break.
+// ═════════════════════════════════════════════════════════════════════════════
+
+export async function analyzeEnvironmentCompliance(environmentId: string, customerId: string) {
+  const envData = await db.select().from(environments)
+    .where(and(eq(environments.id, environmentId), eq(environments.customerId, customerId)))
+    .limit(1);
+  if (!envData.length) throw new Error(`Environment not found or does not belong to customer: ${environmentId}`);
+  const env = envData[0];
+
+  const result = await runFullComplianceAnalysis(customerId, [environmentId]);
+
+  const warnings: string[] = [];
+  for (const a of result.alerts) {
+    if (a.environmentId === environmentId || !a.environmentId)
+      warnings.push(`[${a.severity.toUpperCase()}] ${a.message}`);
+  }
+
+  let totalProcessorRequired = 0, totalCores = 0, totalPhysicalCores = 0, totalCoreFactor = 0;
+  const calculationDetails: any[] = [];
+
+  for (const u of result.licensingUnits) {
+    totalProcessorRequired += u.processorDemand;
+    totalCores += u.cores;
+    totalPhysicalCores += u.cores;
+    totalCoreFactor += u.cores * u.coreFactor;
     calculationDetails.push({
-      instanceId: instance.id, instanceName: instance.name,
-      hostId: host.id, hostName: host.name, serverType: host.serverType,
-      cores: coreCount, sockets: socketCount, coreFactor: effectiveCoreFactor,
-      processorLicenses: instanceLicenses,
-      hasHardPartitioning: host.hasHardPartitioning, physicalHostId: host.physicalHostId,
-      licensingModel: isStandard ? 'Socket-based (SE2)' : 'Core Factor (EE)'
+      hostId: u.licensingHostId, hostName: u.licensingHostName,
+      serverType: u.serverType, cores: u.cores, sockets: u.sockets,
+      coreFactor: u.coreFactor, processorLicenses: u.processorDemand,
+      hasHardPartitioning: u.hasHardPartitioning,
+      hardPartitioningValid: u.hardPartitioningValid,
+      physicalHostId: u.physicalHostId,
+      licensingModel: u.effectiveEdition.includes('Standard') ? 'Socket-based (SE2)' : 'Core Factor (EE)',
+      environmentNames: u.environmentNames,
+    });
+  }
+
+  const avgCF = totalCores > 0 ? totalCoreFactor / totalCores : 0;
+  const baseDemand = result.productDemands.find(d => d.product === 'Oracle Database');
+  const procAvail = baseDemand?.processorAvailable ?? 0;
+  const nupAvail = baseDemand?.nupAvailable ?? 0;
+
+  let nupRequired = 0;
+  for (const u of result.licensingUnits) nupRequired += u.nupMinimumDemand;
+
+  const procVar = procAvail - totalProcessorRequired;
+  const nupVar = nupAvail - nupRequired;
+
+  const featureIssues = await analyzeFeatureCompliance(environmentId, customerId);
+  const hostDetails = result.licensingUnits.map(u => ({
+    hostId: u.licensingHostId, hostName: u.licensingHostName,
+    serverType: u.serverType, cores: u.cores, physicalCores: u.cores,
+    coreFactor: u.coreFactor, processorLicenses: u.processorDemand,
+    hasHardPartitioning: u.hasHardPartitioning, physicalHostId: u.physicalHostId,
+    licensingHostId: u.licensingHostId, licensingHostName: u.licensingHostName,
+    licensedCores: u.licensedCores, unlicensedCores: u.unlicensedCores,
+    licenseStatus: u.licenseStatus,
+  }));
+
+  const allCoresLicensed = hostDetails.length > 0 && hostDetails.every(h => h.unlicensedCores === 0);
+  const instCnt = await db.select({ count: sql`count(*)` }).from(instances)
+    .where(eq(instances.environmentId, environmentId));
+  const hasInstances = Number(instCnt[0]?.count || 0) > 0;
+
+  const procOk = (procAvail > 0 && procVar >= 0) || allCoresLicensed;
+  const nupOk = nupAvail > 0 && nupVar >= 0;
+  let status = 'compliant';
+  if (!hasInstances) status = 'warning';
+  else if (!procOk && !nupOk) status = 'non-compliant';
+  if (featureIssues.length > 0) status = 'non-compliant';
+
+  return {
+    environmentId, status, warnings,
+    processorLicensesRequired: totalProcessorRequired,
+    processorLicensesAvailable: procAvail,
+    processorLicensesVariance: procVar,
+    nupLicensesRequired: nupRequired,
+    nupLicensesAvailable: nupAvail,
+    nupLicensesVariance: nupVar,
+    totalCores, totalPhysicalCores,
+    coreFactor: avgCF,
+    processorCalculationDetails: JSON.stringify(calculationDetails),
+    nupCalculationDetails: JSON.stringify({
+      totalCores, edition: env.edition,
+      isEnterprise: env.edition.includes('Enterprise'),
+      calculation: env.edition.includes('Enterprise')
+        ? `Enterprise: ${totalProcessorRequired} proc × ${NUP_PER_PROCESSOR} = ${nupRequired} NUP`
+        : `Standard: ${result.licensingUnits.length} server(s) × ${NUP_STANDARD_MINIMUM} = ${nupRequired} NUP`,
+    }),
+    featureIssues, hostDetails,
+  };
+}
+
+export async function calculateProcessorLicenses(environmentId: string) {
+  const envData = await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1);
+  if (!envData.length) throw new Error(`Environment not found: ${environmentId}`);
+
+  const result = await runFullComplianceAnalysis(envData[0].customerId, [environmentId]);
+
+  let totalProc = 0, totalCores = 0, totalPhys = 0, totalCF = 0;
+  const details: any[] = [];
+
+  for (const u of result.licensingUnits) {
+    totalProc += u.processorDemand; totalCores += u.cores; totalPhys += u.cores;
+    totalCF += u.cores * u.coreFactor;
+    details.push({
+      hostId: u.licensingHostId, hostName: u.licensingHostName,
+      serverType: u.serverType, cores: u.cores, sockets: u.sockets,
+      coreFactor: u.coreFactor, processorLicenses: u.processorDemand,
+      hasHardPartitioning: u.hasHardPartitioning, physicalHostId: u.physicalHostId,
+      licensingModel: u.effectiveEdition.includes('Standard') ? 'Socket-based (SE2)' : 'Core Factor (EE)',
     });
   }
 
   return {
-    totalProcessorLicenses,
-    totalCores,
-    totalPhysicalCores,
-    averageCoreFactor: totalCores > 0 ? totalCoreFactor / totalCores : 0,
-    calculationDetails
+    totalProcessorLicenses: totalProc, totalCores, totalPhysicalCores: totalPhys,
+    averageCoreFactor: totalCores > 0 ? totalCF / totalCores : 0,
+    calculationDetails: details,
   };
 }
 
-// ─── Available Processor Licenses ────────────────────────────────────────────
-
 export async function getAvailableProcessorLicenses(environmentId: string, customerId: string) {
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
+  const envData = await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1);
+  if (!envData.length) throw new Error(`Environment not found: ${environmentId}`);
+  const env = envData[0];
 
-  if (!environmentData.length) {
-    throw new Error(`Environment not found: ${environmentId}`);
-  }
-
-  const environment = environmentData[0];
-  let licenseQuery;
-
-  if (environment.edition.includes('Standard')) {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Processor'),
-      like(licenses.product, `%Oracle Database%`),
-      or(like(licenses.edition, `%Standard%`), like(licenses.edition, `%Enterprise%`))
-    );
-  } else if (environment.edition.includes('Enterprise')) {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Processor'),
-      like(licenses.product, `%Oracle Database%`),
-      like(licenses.edition, `%Enterprise%`)
-    );
+  let q;
+  if (env.edition.includes('Standard')) {
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Processor'),
+      like(licenses.product, '%Oracle Database%'),
+      or(like(licenses.edition, '%Standard%'), like(licenses.edition, '%Enterprise%')));
+  } else if (env.edition.includes('Enterprise')) {
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Processor'),
+      like(licenses.product, '%Oracle Database%'), like(licenses.edition, '%Enterprise%'));
   } else {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Processor'),
-      like(licenses.product, `%Oracle Database%`),
-      like(licenses.edition, `%${environment.edition}%`)
-    );
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Processor'),
+      like(licenses.product, '%Oracle Database%'), like(licenses.edition, `%${env.edition}%`));
   }
 
-  const licenseData = await db.select().from(licenses).where(licenseQuery);
-  let availableLicenses = 0;
-  for (const license of licenseData) {
-    if (environment.edition.includes('Enterprise')) {
-      if (license.edition?.includes('Enterprise')) availableLicenses += license.quantity;
-    } else {
-      availableLicenses += license.quantity;
-    }
+  const data = await db.select().from(licenses).where(q);
+  let avail = 0;
+  for (const l of data) {
+    if (env.edition.includes('Enterprise')) {
+      if (l.edition?.includes('Enterprise')) avail += l.quantity;
+    } else avail += l.quantity;
   }
-
-  return { availableLicenses, licenses: licenseData };
+  return { availableLicenses: avail, licenses: data };
 }
-
-// ─── NUP License Calculation ─────────────────────────────────────────────────
 
 export async function calculateNUPLicenses(
   environmentId: string,
   existingProcessorCalculation?: { totalProcessorLicenses: number; totalCores: number }
 ) {
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
+  const envData = await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1);
+  if (!envData.length) throw new Error(`Environment not found: ${environmentId}`);
+  const env = envData[0];
 
-  if (!environmentData.length) {
-    throw new Error(`Environment not found: ${environmentId}`);
+  // DG standby: check Active Data Guard
+  if (env.isDataGuard) {
+    const { map: fnMap } = await loadFeatureProductMap();
+    const af = await db.select().from(featureStats)
+      .where(and(eq(featureStats.environmentId, environmentId), eq(featureStats.currentlyUsed, true)));
+    const usesADG = af.some(f => { const p = fnMap.get(f.name); return p && p.product === 'Active Data Guard'; });
+    if (!usesADG) {
+      return {
+        nupRequired: 0,
+        calculationDetails: {
+          totalCores: 0, nupPerCore: 0, edition: env.edition,
+          isEnterprise: env.edition.includes('Enterprise'),
+          calculation: 'Data Guard standby (pure) — no NUP licenses required',
+        },
+      };
+    }
   }
 
-  const environment = environmentData[0];
+  const pc = existingProcessorCalculation ?? await calculateProcessorLicenses(environmentId);
+  let nupReq = 0, calc = '', nupPer = 0, serverCount = 1;
 
-  if (environment.isDataGuard) {
-    return {
-      nupRequired: 0,
-      calculationDetails: {
-        totalCores: 0, nupPerCore: 0, edition: environment.edition,
-        isEnterprise: environment.edition.includes('Enterprise'),
-        calculation: 'Data Guard standby environment - no NUP licenses required'
-      }
-    };
-  }
-
-  const processorCalculation = existingProcessorCalculation ?? await calculateProcessorLicenses(environmentId);
-  let nupRequired = 0;
-  let calculation = '';
-  let nupPerCore = 0;
-  let serverCount = 1;
-
-  if (environment.edition.includes('Enterprise')) {
-    nupPerCore = NUP_PER_PROCESSOR;
-    nupRequired = processorCalculation.totalProcessorLicenses * NUP_PER_PROCESSOR;
-    calculation = `Enterprise Edition: ${processorCalculation.totalProcessorLicenses} processor licenses × ${NUP_PER_PROCESSOR} NUP/processor = ${nupRequired} NUP licenses`;
+  if (env.edition.includes('Enterprise')) {
+    nupPer = NUP_PER_PROCESSOR;
+    nupReq = pc.totalProcessorLicenses * NUP_PER_PROCESSOR;
+    calc = `Enterprise: ${pc.totalProcessorLicenses} proc × ${NUP_PER_PROCESSOR} = ${nupReq} NUP`;
   } else {
-    nupPerCore = NUP_STANDARD_MINIMUM;
-    const environmentInstances = await db.select().from(instances)
-      .where(eq(instances.environmentId, environmentId));
-
-    const licensingUnits = new Set<string>();
-    for (const inst of environmentInstances) {
-      const hostData = await db.select().from(hosts)
-        .where(eq(hosts.id, inst.hostId))
-        .limit(1);
-      if (hostData.length) {
-        const host = hostData[0];
-        if (host.serverType === 'Virtual' && !host.hasHardPartitioning && host.physicalHostId) {
-          licensingUnits.add(host.physicalHostId);
-        } else {
-          licensingUnits.add(host.id);
-        }
+    nupPer = NUP_STANDARD_MINIMUM;
+    const ei = await db.select().from(instances).where(eq(instances.environmentId, environmentId));
+    const lu = new Set<string>();
+    for (const inst of ei) {
+      const hd = await db.select().from(hosts).where(eq(hosts.id, inst.hostId)).limit(1);
+      if (hd.length) {
+        const h = hd[0];
+        if (h.serverType === 'Virtual' && !h.hasHardPartitioning && h.physicalHostId)
+          lu.add(h.physicalHostId);
+        else lu.add(h.id);
       }
     }
-    serverCount = Math.max(licensingUnits.size, 1);
-    nupRequired = serverCount * NUP_STANDARD_MINIMUM;
-    calculation = `Standard Edition: ${serverCount} servidor(es) × ${NUP_STANDARD_MINIMUM} NUP mínimo por servidor = ${nupRequired} NUP licenses`;
+    serverCount = Math.max(lu.size, 1);
+    nupReq = serverCount * NUP_STANDARD_MINIMUM;
+    calc = `Standard: ${serverCount} server(s) × ${NUP_STANDARD_MINIMUM} = ${nupReq} NUP`;
   }
 
   return {
-    nupRequired,
+    nupRequired: nupReq,
     calculationDetails: {
-      totalCores: processorCalculation.totalCores,
-      nupPerCore, edition: environment.edition,
-      isEnterprise: environment.edition.includes('Enterprise'),
-      serverCount: !environment.edition.includes('Enterprise') ? serverCount : undefined,
-      calculation
-    }
+      totalCores: pc.totalCores, nupPerCore: nupPer, edition: env.edition,
+      isEnterprise: env.edition.includes('Enterprise'),
+      serverCount: !env.edition.includes('Enterprise') ? serverCount : undefined,
+      calculation: calc,
+    },
   };
 }
 
-// ─── Available NUP Licenses ──────────────────────────────────────────────────
-
 export async function getAvailableNUPLicenses(environmentId: string, customerId: string) {
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
+  const envData = await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1);
+  if (!envData.length) throw new Error(`Environment not found: ${environmentId}`);
+  const env = envData[0];
 
-  if (!environmentData.length) {
-    throw new Error(`Environment not found: ${environmentId}`);
-  }
-
-  const environment = environmentData[0];
-  let licenseQuery;
-
-  if (environment.edition.includes('Standard')) {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Named User Plus'),
-      like(licenses.product, `%Oracle Database%`),
-      or(like(licenses.edition, `%Standard%`), like(licenses.edition, `%Enterprise%`))
-    );
-  } else if (environment.edition.includes('Enterprise')) {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Named User Plus'),
-      like(licenses.product, `%Oracle Database%`),
-      like(licenses.edition, `%Enterprise%`)
-    );
+  let q;
+  if (env.edition.includes('Standard')) {
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Named User Plus'),
+      like(licenses.product, '%Oracle Database%'),
+      or(like(licenses.edition, '%Standard%'), like(licenses.edition, '%Enterprise%')));
+  } else if (env.edition.includes('Enterprise')) {
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Named User Plus'),
+      like(licenses.product, '%Oracle Database%'), like(licenses.edition, '%Enterprise%'));
   } else {
-    licenseQuery = and(
-      eq(licenses.customerId, customerId),
-      eq(licenses.metric, 'Named User Plus'),
-      like(licenses.product, `%Oracle Database%`),
-      like(licenses.edition, `%${environment.edition}%`)
-    );
+    q = and(eq(licenses.customerId, customerId), eq(licenses.metric, 'Named User Plus'),
+      like(licenses.product, '%Oracle Database%'), like(licenses.edition, `%${env.edition}%`));
   }
 
-  const licenseData = await db.select().from(licenses).where(licenseQuery);
-  let availableNUPs = 0;
-  for (const license of licenseData) {
-    if (environment.edition.includes('Enterprise')) {
-      if (license.edition?.includes('Enterprise')) availableNUPs += license.quantity;
-    } else {
-      availableNUPs += license.quantity;
-    }
+  const data = await db.select().from(licenses).where(q);
+  let avail = 0;
+  for (const l of data) {
+    if (env.edition.includes('Enterprise')) {
+      if (l.edition?.includes('Enterprise')) avail += l.quantity;
+    } else avail += l.quantity;
   }
-
-  return { availableNUPs, licenses: licenseData };
+  return { availableNUPs: avail, licenses: data };
 }
 
-// ─── Feature Compliance Analysis ─────────────────────────────────────────────
-
 export async function analyzeFeatureCompliance(environmentId: string, customerId: string) {
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
+  const envData = await db.select().from(environments).where(eq(environments.id, environmentId)).limit(1);
+  if (!envData.length) throw new Error(`Environment not found: ${environmentId}`);
+  const env = envData[0];
 
-  if (!environmentData.length) {
-    throw new Error(`Environment not found: ${environmentId}`);
-  }
+  const rawFeatures = await db.select().from(featureStats)
+    .where(and(eq(featureStats.environmentId, environmentId), eq(featureStats.currentlyUsed, true)));
+  const featuresInUse = filterComplianceRelevantFeatureUsage(rawFeatures);
 
-  const environment = environmentData[0];
-  const rawFeaturesInUse = await db.select().from(featureStats)
-    .where(and(
-      eq(featureStats.environmentId, environmentId),
-      eq(featureStats.currentlyUsed, true)
-    ));
-  const featuresInUse = filterComplianceRelevantFeatureUsage(rawFeaturesInUse);
+  const { map: fnMap, raw: catalog } = await loadFeatureProductMap();
 
-  const licenseProductsData = await db.select().from(intLicenseProducts);
-  const licenseProductMap = new Map(licenseProductsData.map(p => [p.product, p]));
+  const allLicenses = await db.select().from(licenses).where(eq(licenses.customerId, customerId));
+  const featureProductNames = new Set(catalog.filter(p => p.type === 'Feature' || p.type === 'Option Pack').map(p => p.product));
+  const licMap = new Map<string, typeof allLicenses[0]>();
+  allLicenses.forEach(l => { if (featureProductNames.has(l.product)) licMap.set(l.product, l); });
 
-  // Get ALL available licenses for this customer (not filtered by metric,
-  // since Feature/Option Pack licenses use Processor or NUP as their metric)
-  const allCustomerLicenses = await db.select().from(licenses)
-    .where(eq(licenses.customerId, customerId));
+  const issues: FeatureIssue[] = [];
+  const resolved = new Set<string>();
 
-  // Build a map of feature/option pack licenses by matching license.product
-  // against the product catalog entries that are Features or Option Packs
-  const featureProductNames = new Set(
-    licenseProductsData
-      .filter(p => p.type === 'Feature' || p.type === 'Option Pack')
-      .map(p => p.product)
-  );
-  const availableLicenseMap = new Map<string, typeof allCustomerLicenses[0]>();
-  allCustomerLicenses.forEach(l => {
-    if (featureProductNames.has(l.product)) {
-      availableLicenseMap.set(l.product, l);
-    }
-  });
+  // Tuning→Diagnostics
+  const usedProducts = new Set<string>();
+  for (const f of featuresInUse) { const p = fnMap.get(f.name); if (p) usedProducts.add(p.product); }
+  if (usedProducts.has('Tuning') && !usedProducts.has('Diagnostics')) usedProducts.add('Diagnostics');
 
-  const featureIssues = [];
+  for (const feat of featuresInUse) {
+    const lp = fnMap.get(feat.name);
+    if (!lp || resolved.has(lp.product) || FREE_PRODUCTS.has(lp.product)) continue;
+    resolved.add(lp.product);
 
-  for (const feature of featuresInUse) {
-    const licenseProduct = licenseProductMap.get(feature.name);
-    if (!licenseProduct) continue;
+    let ok = true, desc = '', appLic = null;
 
-    let isCompliant = true;
-    let issueDescription = '';
-    let applicableLicense = null;
-
-    if (licenseProduct.onlyEnterprise === true && !environment.edition.includes('Enterprise')) {
-      isCompliant = false;
-      issueDescription = `Feature '${feature.name}' requires Enterprise Edition but environment is using ${environment.edition}`;
+    if (lp.onlyEnterprise === true && !env.edition.includes('Enterprise')) {
+      ok = false;
+      desc = `Feature '${lp.product}' requires Enterprise Edition but environment uses ${env.edition}`;
     }
 
-    if (licenseProduct.type === 'Feature' || licenseProduct.type === 'Option Pack') {
-      const license = availableLicenseMap.get(feature.name);
-      if (!license) {
-        isCompliant = false;
-        issueDescription = `No license found for ${licenseProduct.type} '${feature.name}'`;
-      } else {
-        applicableLicense = license;
-      }
+    if (lp.type === 'Feature' || lp.type === 'Option Pack') {
+      const lic = licMap.get(lp.product);
+      if (!lic) {
+        ok = false;
+        desc = desc
+          ? `${desc}. No license found for ${lp.type} '${lp.product}'`
+          : `No license found for ${lp.type} '${lp.product}'`;
+      } else appLic = lic;
     }
 
-    if (!isCompliant) {
-      featureIssues.push({
-        featureName: feature.name,
-        featureType: licenseProduct.type || 'Unknown',
-        status: 'non-compliant',
-        issueDescription,
-        isLicensed: !!applicableLicense,
-        licenseId: applicableLicense?.id
+    if (!ok) {
+      issues.push({
+        featureName: lp.product, featureType: lp.type || 'Unknown',
+        status: 'non-compliant', issueDescription: desc,
+        isLicensed: !!appLic, licenseId: appLic?.id,
       });
     }
   }
 
-  return featureIssues;
-}
+  // Diagnostics dependency check
+  if (usedProducts.has('Diagnostics') && !resolved.has('Diagnostics')) {
+    if (!licMap.has('Diagnostics')) {
+      issues.push({
+        featureName: 'Diagnostics', featureType: 'Option Pack',
+        status: 'non-compliant',
+        issueDescription: 'Tuning Pack requires Diagnostics Pack, but no Diagnostics Pack license found',
+        isLicensed: false,
+      });
+    }
+  }
 
-// ─── Host Licensing Details ──────────────────────────────────────────────────
+  return issues;
+}
 
 export async function generateHostLicensingDetails(environmentId: string, customerId: string) {
-  const environmentData = await db.select().from(environments)
-    .where(eq(environments.id, environmentId))
-    .limit(1);
-  const isStandard = environmentData.length > 0 && environmentData[0].edition.includes('Standard');
-
-  // Determine effective edition (Standard env using Enterprise features → Enterprise licensing)
-  let effectiveEdition = environmentData.length > 0 ? environmentData[0].edition : 'Enterprise';
-  if (isStandard) {
-    const rawFeaturesInUse = await db.select().from(featureStats)
-      .where(and(
-        eq(featureStats.environmentId, environmentId),
-        eq(featureStats.currentlyUsed, true)
-      ));
-    const featuresInUse = filterComplianceRelevantFeatureUsage(rawFeaturesInUse);
-
-    if (featuresInUse.length > 0) {
-      const enterpriseProducts = await db.select().from(intLicenseProducts)
-        .where(eq(intLicenseProducts.onlyEnterprise, true));
-      const enterpriseOnlyNames = new Set(enterpriseProducts.map(p => p.product));
-      if (featuresInUse.some(f => enterpriseOnlyNames.has(f.name))) {
-        effectiveEdition = 'Enterprise';
-      }
-    }
-  }
-
-  const environmentInstances = await db.select().from(instances)
-    .where(eq(instances.environmentId, environmentId));
-
-  const hostDetails = [];
-  const processedHosts = new Set<string>();
-  const processedPhysicalHosts = new Set<string>();
-
-  for (const instance of environmentInstances) {
-    if (processedHosts.has(instance.hostId)) continue;
-    processedHosts.add(instance.hostId);
-
-    const hostData = await db.select().from(hosts)
-      .where(eq(hosts.id, instance.hostId))
-      .limit(1);
-
-    if (!hostData.length) continue;
-
-    const host = hostData[0];
-    let hostToCheckForLicenses = host.id;
-    if (host.serverType === 'Virtual' && !host.hasHardPartitioning && host.physicalHostId) {
-      hostToCheckForLicenses = host.physicalHostId;
-    }
-
-    const hostCoreAssignments = await db.select({
-      coreAssignment: coreAssignments,
-      licenseMapping: coreLicenseMappings,
-      license: licenses
-    })
-    .from(coreAssignments)
-    .leftJoin(coreLicenseMappings, eq(coreAssignments.id, coreLicenseMappings.coreAssignmentId))
-    .leftJoin(licenses, eq(coreLicenseMappings.licenseId, licenses.id))
-    .where(eq(coreAssignments.hostId, hostToCheckForLicenses));
-
-    const licensedCoreIds = new Set<number>();
-    const allCoreIds = new Set<number>();
-
-    hostCoreAssignments.forEach(a => {
-      allCoreIds.add(a.coreAssignment.coreId);
-      if (a.licenseMapping?.licenseId && a.license?.edition) {
-        // Only count as licensed if the license edition matches the environment's effective edition
-        const licEdition = a.license.edition;
-        if (effectiveEdition.includes('Enterprise')) {
-          // Enterprise environments require Enterprise licenses
-          if (licEdition.includes('Enterprise')) {
-            licensedCoreIds.add(a.coreAssignment.coreId);
-          }
-        } else {
-          // Standard environments accept Standard or Enterprise licenses
-          if (licEdition.includes('Standard') || licEdition.includes('Enterprise')) {
-            licensedCoreIds.add(a.coreAssignment.coreId);
-          }
-        }
-      }
-    });
-
-    let totalCores = host.cores;
-    let physicalCores: number | null = null;
-    let licensingHostId = host.id;
-    let licensingHostName = host.name;
-
-    if (host.serverType === 'Physical') {
-      if (processedPhysicalHosts.has(host.id)) continue;
-      processedPhysicalHosts.add(host.id);
-      physicalCores = host.cores;
-    } else if (host.serverType === 'Virtual' && host.hasHardPartitioning) {
-      totalCores = Math.max(allCoreIds.size, 1);
-    } else if (host.serverType === 'Virtual' && host.physicalHostId) {
-      if (processedPhysicalHosts.has(host.physicalHostId)) continue;
-      processedPhysicalHosts.add(host.physicalHostId);
-
-      const physicalHostData = await db.select().from(hosts)
-        .where(eq(hosts.id, host.physicalHostId))
-        .limit(1);
-
-      if (physicalHostData.length) {
-        licensingHostId = physicalHostData[0].id;
-        licensingHostName = physicalHostData[0].name;
-        physicalCores = physicalHostData[0].cores;
-        totalCores = physicalCores;
-      }
-    }
-
-    const licensedCores = licensedCoreIds.size;
-    const unlicensedCores = Math.max(0, totalCores - licensedCores);
-
-    let licenseStatus = 'compliant';
-    if (unlicensedCores > 0) {
-      licenseStatus = licensedCores === 0 ? 'non-compliant' : 'partial';
-    }
-
-    hostDetails.push({
-      hostId: host.id, hostName: host.name, serverType: host.serverType,
-      cores: totalCores, physicalCores, coreFactor: host.coreFactor,
-      processorLicenses: isStandard ? Math.min(host.sockets || 1, 2) : totalCores * host.coreFactor,
-      hasHardPartitioning: host.hasHardPartitioning || false,
-      physicalHostId: host.physicalHostId,
-      licensingHostId, licensingHostName,
-      licensedCores, unlicensedCores, licenseStatus
-    });
-  }
-
-  return hostDetails;
+  const result = await runFullComplianceAnalysis(customerId, [environmentId]);
+  return result.licensingUnits.map(u => ({
+    hostId: u.licensingHostId, hostName: u.licensingHostName,
+    serverType: u.serverType, cores: u.cores, physicalCores: u.cores,
+    coreFactor: u.coreFactor, processorLicenses: u.processorDemand,
+    hasHardPartitioning: u.hasHardPartitioning, physicalHostId: u.physicalHostId,
+    licensingHostId: u.licensingHostId, licensingHostName: u.licensingHostName,
+    licensedCores: u.licensedCores, unlicensedCores: u.unlicensedCores,
+    licenseStatus: u.licenseStatus,
+  }));
 }
 
-// ─── Full Environment Compliance Analysis ────────────────────────────────────
-
-export async function analyzeEnvironmentCompliance(environmentId: string, customerId: string) {
-  const environmentData = await db.select().from(environments)
-    .where(and(eq(environments.id, environmentId), eq(environments.customerId, customerId)))
-    .limit(1);
-
-  if (!environmentData.length) {
-    throw new Error(`Environment not found or does not belong to customer: ${environmentId}`);
-  }
-
-  const environment = environmentData[0];
-  const warnings: string[] = [];
-
-  const environmentInstances = await db.select().from(instances)
-    .where(eq(instances.environmentId, environmentId));
-  const hasInstances = environmentInstances.length > 0;
-
-  if (!hasInstances) {
-    warnings.push('Environment has no instances — compliance cannot be fully evaluated. Add instances to link this environment to its hosts.');
-  }
-
-  const processorCalculation = await calculateProcessorLicenses(environmentId);
-  const processorLicenses = await getAvailableProcessorLicenses(environmentId, customerId);
-  const processorVariance = processorLicenses.availableLicenses - processorCalculation.totalProcessorLicenses;
-
-  const nupCalculation = await calculateNUPLicenses(environmentId, processorCalculation);
-  const nupLicenses = await getAvailableNUPLicenses(environmentId, customerId);
-  const nupVariance = nupLicenses.availableNUPs - nupCalculation.nupRequired;
-
-  const featureIssues = await analyzeFeatureCompliance(environmentId, customerId);
-  const hostDetails = await generateHostLicensingDetails(environmentId, customerId);
-
-  // Check if ALL cores are covered via core assignments (important for soft partitioning)
-  const allCoresLicensedViaAssignments = hostDetails.length > 0 && hostDetails.every(h => h.unlicensedCores === 0);
-
-  // Pool-based check (license records) OR core-assignment-based check
-  const processorOk = (processorLicenses.availableLicenses > 0 && processorVariance >= 0) ||
-                      allCoresLicensedViaAssignments;
-  const nupOk = nupLicenses.availableNUPs > 0 && nupVariance >= 0;
-  let status = 'compliant';
-
-  if (!hasInstances) {
-    status = 'warning';
-  } else if (!processorOk && !nupOk) {
-    status = 'non-compliant';
-  }
-  if (featureIssues.length > 0) {
-    status = 'non-compliant';
-  }
-
-  return {
-    environmentId, status, warnings,
-    processorLicensesRequired: processorCalculation.totalProcessorLicenses,
-    processorLicensesAvailable: processorLicenses.availableLicenses,
-    processorLicensesVariance: processorVariance,
-    nupLicensesRequired: nupCalculation.nupRequired,
-    nupLicensesAvailable: nupLicenses.availableNUPs,
-    nupLicensesVariance: nupVariance,
-    totalCores: processorCalculation.totalCores,
-    totalPhysicalCores: processorCalculation.totalPhysicalCores,
-    coreFactor: processorCalculation.averageCoreFactor,
-    processorCalculationDetails: JSON.stringify(processorCalculation.calculationDetails),
-    nupCalculationDetails: JSON.stringify(nupCalculation.calculationDetails),
-    featureIssues, hostDetails
-  };
-}
-
-// ─── Effective Edition (accounts for Enterprise features on Standard envs) ──
-
-export async function getEffectiveEdition(envId: string, envEdition: string, featureUsage: { name: string }[]) {
+export async function getEffectiveEdition(
+  envId: string, envEdition: string, featureUsage: { name: string }[]
+) {
   if (!envEdition.includes('Standard')) return envEdition;
-
-  const relevantFeatureUsage = filterComplianceRelevantFeatureUsage(featureUsage);
-  const enterpriseProducts = await db.select().from(intLicenseProducts)
-    .where(eq(intLicenseProducts.onlyEnterprise, true));
-  const enterpriseOnlyNames = new Set(enterpriseProducts.map(p => p.product));
-  const usesEnterprise = relevantFeatureUsage.some(f => enterpriseOnlyNames.has(f.name));
-  return usesEnterprise ? 'Enterprise' : envEdition;
+  const relevant = filterComplianceRelevantFeatureUsage(featureUsage);
+  const { map: fnMap, enterpriseOnly } = await loadFeatureProductMap();
+  return relevant.some(f => {
+    const p = fnMap.get(f.name);
+    return p && enterpriseOnly.has(p.product);
+  }) ? 'Enterprise' : envEdition;
 }
 
-// ─── Cross-Environment Shared Host Detection ────────────────────────────────
-
-export async function detectSharedHostGroups(environmentsData: Array<{ id: string; name: string; edition: string; instances: any[] }>) {
-  const hostToEnvironments = new Map<string, {
+export async function detectSharedHostGroups(
+  environmentsData: Array<{ id: string; name: string; edition: string; instances: any[] }>
+) {
+  const hte = new Map<string, {
     envIds: string[]; envNames: string[]; physicalHostName: string;
     cores: number; coreFactor: number; edition: string;
   }>();
 
   for (const env of environmentsData) {
     for (const inst of env.instances) {
-      const hostData = await db.select().from(hosts)
-        .where(eq(hosts.id, inst.hostId))
-        .limit(1);
-      if (!hostData.length) continue;
-      const host = hostData[0];
+      const hd = await db.select().from(hosts).where(eq(hosts.id, inst.hostId)).limit(1);
+      if (!hd.length) continue;
+      const h = hd[0];
 
-      let physicalHostId: string;
-      let physicalHostName: string;
-      let physicalCores: number;
-      let physicalCoreFactor: number;
+      let pid: string, pn: string, pc: number, pcf: number;
+      if (h.serverType === 'Physical') {
+        pid = h.id; pn = h.name; pc = h.cores; pcf = h.coreFactor;
+      } else if (h.serverType === 'Virtual' && !h.hasHardPartitioning && h.physicalHostId) {
+        const ph = await db.select().from(hosts).where(eq(hosts.id, h.physicalHostId)).limit(1);
+        if (!ph.length) continue;
+        pid = ph[0].id; pn = ph[0].name; pc = ph[0].cores; pcf = ph[0].coreFactor;
+      } else continue;
 
-      if (host.serverType === 'Physical') {
-        physicalHostId = host.id;
-        physicalHostName = host.name;
-        physicalCores = host.cores;
-        physicalCoreFactor = host.coreFactor;
-      } else if (host.serverType === 'Virtual' && !host.hasHardPartitioning && host.physicalHostId) {
-        const physHost = await db.select().from(hosts)
-          .where(eq(hosts.id, host.physicalHostId))
-          .limit(1);
-        if (!physHost.length) continue;
-        physicalHostId = physHost[0].id;
-        physicalHostName = physHost[0].name;
-        physicalCores = physHost[0].cores;
-        physicalCoreFactor = physHost[0].coreFactor;
-      } else {
-        continue;
+      if (!hte.has(pid)) {
+        hte.set(pid, { envIds: [], envNames: [], physicalHostName: pn, cores: pc, coreFactor: pcf, edition: env.edition });
       }
-
-      if (!hostToEnvironments.has(physicalHostId)) {
-        hostToEnvironments.set(physicalHostId, {
-          envIds: [], envNames: [], physicalHostName,
-          cores: physicalCores, coreFactor: physicalCoreFactor, edition: env.edition
-        });
-      }
-
-      const entry = hostToEnvironments.get(physicalHostId)!;
-      if (!entry.envIds.includes(env.id)) {
-        entry.envIds.push(env.id);
-        entry.envNames.push(env.name);
-      }
+      const e = hte.get(pid)!;
+      if (!e.envIds.includes(env.id)) { e.envIds.push(env.id); e.envNames.push(env.name); }
     }
   }
 
-  const sharedHostGroups: Array<{
+  const groups: Array<{
     physicalHostId: string; physicalHostName: string;
     cores: number; coreFactor: number; sharedProcessorLicenses: number;
     environmentIds: string[]; environmentNames: string[];
   }> = [];
 
-  hostToEnvironments.forEach((info, physHostId) => {
+  hte.forEach((info, pid) => {
     if (info.envIds.length > 1) {
-      const isStandard = info.edition.includes('Standard');
-      const sharedLicenses = isStandard ? Math.min(2, 1) : info.cores * info.coreFactor;
-
-      sharedHostGroups.push({
-        physicalHostId: physHostId,
-        physicalHostName: info.physicalHostName,
+      const isSE = info.edition.includes('Standard');
+      groups.push({
+        physicalHostId: pid, physicalHostName: info.physicalHostName,
         cores: info.cores, coreFactor: info.coreFactor,
-        sharedProcessorLicenses: sharedLicenses,
-        environmentIds: info.envIds, environmentNames: info.envNames
+        sharedProcessorLicenses: isSE ? Math.min(2, 1) : info.cores * info.coreFactor,
+        environmentIds: info.envIds, environmentNames: info.envNames,
       });
     }
   });
 
-  return sharedHostGroups;
+  return groups;
 }
