@@ -1087,6 +1087,67 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
     // Run full Licensing Unit analysis for aggregate data
     const fullAnalysis = await runFullComplianceAnalysis(customerId);
 
+    // ── Post-process: fix per-environment compliance using aggregate pool check ──
+    // The per-env loop above checks "can the full license pool cover MY demand?"
+    // which is wrong — all environments share the same pool. Use the aggregate
+    // productDemands from the Licensing Unit engine to determine pool coverage.
+    const dbDemand = fullAnalysis.productDemands.find(d => d.product === 'Oracle Database');
+    const poolCovered = dbDemand?.covered ?? false;
+
+    for (const env of matrixData) {
+      // Find the licensing units that serve this environment
+      const envUnits = fullAnalysis.licensingUnits.filter(u => u.environmentIds.includes(env.id));
+      const allCoresLicensed = envUnits.length > 0 && envUnits.every(u => u.licenseStatus === 'compliant');
+      const hasFeatureIssues = env.features.some((f: any) => f.status === 'used' || f.status === 'enterprise-required');
+      const hasInstances = env.instances && env.instances.length > 0;
+
+      const isCompliant = allCoresLicensed || poolCovered;
+      env.isCompliant = isCompliant;
+
+      if (!hasInstances) {
+        env.complianceStatus = 'warning';
+      } else if (hasFeatureIssues) {
+        env.complianceStatus = 'non-compliant';
+      } else if (isCompliant) {
+        env.complianceStatus = 'compliant';
+      } else {
+        env.complianceStatus = 'non-compliant';
+      }
+
+      if (!hasInstances) {
+        env.baseProductStatus = 'unused';
+      } else if (isCompliant) {
+        env.baseProductStatus = 'licensed';
+      } else {
+        env.baseProductStatus = 'used';
+      }
+
+      // Fix license needs — if compliant, no purchases needed for base product
+      if (isCompliant) {
+        env.processorNeeded = 0;
+        env.nupNeeded = 0;
+      }
+    }
+
+    // Recompute purchase summary after fix
+    let fixedAllCompliant = true;
+    let fixedTotalProcessorNeeded = 0;
+    for (const env of matrixData) {
+      if (env.complianceStatus !== 'compliant') fixedAllCompliant = false;
+      fixedTotalProcessorNeeded += env.processorNeeded;
+    }
+    const fixedDedup = Math.max(0, fixedTotalProcessorNeeded - sharedHostDeduction);
+    licensePurchaseSummary.allCompliant = fixedAllCompliant;
+    licensePurchaseSummary.totalProcessorNeeded = fixedTotalProcessorNeeded;
+    licensePurchaseSummary.deduplicatedProcessorNeeded = fixedDedup;
+
+    // Re-filter hostNeeds to remove hosts that are actually compliant
+    licensePurchaseSummary.hostNeeds = (licensePurchaseSummary.hostNeeds || []).filter((h: any) => {
+      const unit = fullAnalysis.licensingUnits.find(u => u.licensingHostId === h.hostId);
+      if (!unit) return true;
+      return unit.licenseStatus !== 'compliant' && !poolCovered;
+    });
+
     return res.json({
       environments: matrixData,
       sharedHostGroups,
