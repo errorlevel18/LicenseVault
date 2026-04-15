@@ -834,7 +834,7 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
           oracleNames = feature.oracleFeatureNames ? JSON.parse(feature.oracleFeatureNames) : [];
         } catch (_) { /* invalid JSON, ignore */ }
         
-        let isUsed = featureUsage.some(f => {
+        const matchedUsage = featureUsage.find(f => {
           if (f.name === feature.product) return true;
           if (oracleNames.length > 0) {
             const fNameLower = f.name.toLowerCase();
@@ -844,6 +844,7 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
           }
           return false;
         });
+        const isUsed = !!matchedUsage;
         
         const isLicensed = licenseMap.has(feature.product) && isUsed;
         
@@ -853,7 +854,11 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
           used: isUsed,
           onlyEnterprise: feature.onlyEnterprise,
           type: feature.type,
-          status: 'unused' as string // will be computed below
+          status: 'unused' as string, // will be computed below
+          matchedFeatureName: matchedUsage?.name || null,
+          detectedUsages: matchedUsage?.detectedUsages || 0,
+          firstUsageDate: matchedUsage?.firstUsageDate || null,
+          lastUsageDate: matchedUsage?.lastUsageDate || null,
         };
       });
       

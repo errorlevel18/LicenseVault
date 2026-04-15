@@ -51,6 +51,10 @@ type FeatureData = {
   onlyEnterprise: boolean | null;
   type: string | null;
   status: FeatureStatus;
+  matchedFeatureName: string | null;
+  detectedUsages: number;
+  firstUsageDate: string | null;
+  lastUsageDate: string | null;
 };
 
 type BaseProductData = {
@@ -702,7 +706,11 @@ const MatrixView: React.FC = () => {
         case 'enterprise-required': return 'Enterprise Edition Required';
         default: return '';
       }
-    })();    return (
+    })();
+
+    const hasUsageDetails = feature.used && (feature.matchedFeatureName || feature.detectedUsages > 0 || feature.firstUsageDate || feature.lastUsageDate);
+
+    return (
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -713,8 +721,24 @@ const MatrixView: React.FC = () => {
               {iconElement}
             </div>
           </TooltipTrigger>
-          <TooltipContent>
-            <p>{tooltipText}</p>
+          <TooltipContent className={hasUsageDetails ? 'max-w-xs' : ''}>
+            <p className="font-semibold">{tooltipText}</p>
+            {hasUsageDetails && (
+              <div className="mt-1 space-y-0.5 text-xs">
+                {feature.matchedFeatureName && (
+                  <p><span className="text-muted-foreground">Feature:</span> {feature.matchedFeatureName}</p>
+                )}
+                {feature.detectedUsages > 0 && (
+                  <p><span className="text-muted-foreground">Detected usages:</span> {feature.detectedUsages}</p>
+                )}
+                {feature.firstUsageDate && (
+                  <p><span className="text-muted-foreground">First usage:</span> {feature.firstUsageDate}</p>
+                )}
+                {feature.lastUsageDate && (
+                  <p><span className="text-muted-foreground">Last usage:</span> {feature.lastUsageDate}</p>
+                )}
+              </div>
+            )}
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
