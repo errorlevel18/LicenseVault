@@ -867,6 +867,13 @@ router.post('/matrix-view', validateRequest(getMatrixViewSchema), async (req, re
       const diagFeature = resolvedFeatures.find(f => f.product.toLowerCase().includes('diagnostics'));
       if (tuningFeature?.used && diagFeature && !diagFeature.used) {
         diagFeature.used = true; // Mark Diagnostics as effectively used
+        // Copy usage details from Tuning so tooltip shows info
+        if (!diagFeature.matchedFeatureName && tuningFeature.matchedFeatureName) {
+          diagFeature.matchedFeatureName = tuningFeature.matchedFeatureName + ' (requires Diagnostics)';
+          diagFeature.detectedUsages = tuningFeature.detectedUsages;
+          diagFeature.firstUsageDate = tuningFeature.firstUsageDate;
+          diagFeature.lastUsageDate = tuningFeature.lastUsageDate;
+        }
       }
       
       // Compute per-feature status

@@ -722,9 +722,9 @@ const MatrixView: React.FC = () => {
             </div>
           </TooltipTrigger>
           <TooltipContent className={hasUsageDetails ? 'max-w-xs' : ''}>
-            <p className="font-semibold">{tooltipText}</p>
+            {!hasUsageDetails && <p>{tooltipText}</p>}
             {hasUsageDetails && (
-              <div className="mt-1 space-y-0.5 text-xs">
+              <div className="space-y-0.5 text-xs">
                 {feature.matchedFeatureName && (
                   <p><span className="text-muted-foreground">Feature:</span> {feature.matchedFeatureName}</p>
                 )}
