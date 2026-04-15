@@ -8,4 +8,7 @@ data/oralicensemgr.db
 data/oralicensemgr.db-shm
 data/oralicensemgr.db-wal
 data/oralicensemgr.db.sql
+data/licensevault.db
+data/licensevault.db-shm
+data/licensevault.db-wal
 Collection-*
